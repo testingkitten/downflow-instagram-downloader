@@ -362,51 +362,60 @@ export default function Home() {
 
       <section className="hero-grid" id="top">
         <div className="tool-stack">
-          <form className="input-card" onSubmit={handleSubmit}>
-            <label className="sr-only" htmlFor="instagram-url">
-              Instagram link
-            </label>
-            <div className={`url-field ${viewState === "error" ? "has-error" : ""}`}>
-              <LinkSimple className="field-icon" size={19} weight="regular" aria-hidden="true" />
-              <input
-                id="instagram-url"
-                ref={inputRef}
-                autoFocus
-                value={url}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
-                  setUrl(nextValue);
-                  setErrorMessage("");
-                  setViewState("idle");
-                  queueLookup(nextValue);
-                }}
-                placeholder="Paste an Instagram link"
-                autoComplete="url"
-                spellCheck={false}
-                aria-invalid={viewState === "error"}
-              />
-              {url ? (
-                <button className="clear-button" type="button" onClick={clearAll} aria-label="Clear link">
-                  <X size={17} weight="bold" />
-                </button>
-              ) : null}
-              <button
-                className="paste-button"
-                type="button"
-                onClick={handlePaste}
-                disabled={pasteState === "pasting" || viewState === "loading"}
-              >
-                <ClipboardText size={17} weight="regular" aria-hidden="true" />
-                {pasteState === "pasting" ? "Pasting" : "Paste Link"}
-              </button>
+          <div className="paste-zone">
+            <div className="paste-zone-head">
+              <span>PASTE / DOWNLOAD</span>
+              <span>CTRL / CMD + V</span>
             </div>
-            {viewState === "error" ? (
-              <p className="error-note" role="alert">
-                <WarningCircle size={15} weight="fill" aria-hidden="true" />
-                {errorMessage}
-              </p>
-            ) : null}
-          </form>
+            <div className="paste-zone-mark" aria-hidden="true">
+              <ClipboardText size={25} weight="regular" />
+            </div>
+            <form className="input-card" onSubmit={handleSubmit}>
+              <label className="sr-only" htmlFor="instagram-url">
+                Instagram link
+              </label>
+              <div className={`url-field ${viewState === "error" ? "has-error" : ""}`}>
+                <LinkSimple className="field-icon" size={19} weight="regular" aria-hidden="true" />
+                <input
+                  id="instagram-url"
+                  ref={inputRef}
+                  autoFocus
+                  value={url}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setUrl(nextValue);
+                    setErrorMessage("");
+                    setViewState("idle");
+                    queueLookup(nextValue);
+                  }}
+                  placeholder="Paste an Instagram link"
+                  autoComplete="url"
+                  spellCheck={false}
+                  aria-invalid={viewState === "error"}
+                />
+                {url ? (
+                  <button className="clear-button" type="button" onClick={clearAll} aria-label="Clear link">
+                    <X size={17} weight="bold" />
+                  </button>
+                ) : null}
+                <button
+                  className="paste-button"
+                  type="button"
+                  onClick={handlePaste}
+                  disabled={pasteState === "pasting" || viewState === "loading"}
+                >
+                  <ClipboardText size={17} weight="regular" aria-hidden="true" />
+                  {pasteState === "pasting" ? "Pasting" : "Paste Link"}
+                </button>
+              </div>
+              {viewState === "error" ? (
+                <p className="error-note" role="alert">
+                  <WarningCircle size={15} weight="fill" aria-hidden="true" />
+                  {errorMessage}
+                </p>
+              ) : null}
+            </form>
+          </div>
         </div>
       </section>
 
