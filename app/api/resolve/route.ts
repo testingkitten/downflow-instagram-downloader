@@ -95,10 +95,13 @@ function isPostMediaUrl(value: string) {
   try {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
+    const imagePath = /\/v\/t51\.[^/]+-15\//i.test(url.pathname);
+    const videoPath =
+      /\/v\/t2\//i.test(url.pathname) && /\.(mp4|mov|m4v)(?:$|[?#])/i.test(value);
     return (
       isMediaUrl(value) &&
       (/^scontent(?:[.-])/i.test(host) || host.endsWith(".fbcdn.net")) &&
-      /\/v\/t51\.[^/]+-15\//i.test(url.pathname)
+      (imagePath || videoPath)
     );
   } catch {
     return false;
@@ -144,6 +147,7 @@ function addMediaCandidate(
   media: MediaItem[],
   seen: Map<string, number>,
   fallbackType: MediaItem["type"],
+  thumbnailUrl?: string,
 ) {
   const url = cleanValue(rawValue);
   if (!isPostMediaUrl(url)) return;
@@ -152,16 +156,32 @@ function addMediaCandidate(
   const score = mediaQualityScore(url);
   const existingScore = seen.get(key);
   const existingIndex = media.findIndex((item) => mediaKey(item.url) === key);
+  const cleanThumbnail = thumbnailUrl && isPostMediaUrl(thumbnailUrl)
+    ? cleanValue(thumbnailUrl)
+    : undefined;
 
   if (existingIndex >= 0) {
     if (existingScore !== undefined && score <= existingScore) return;
-    media[existingIndex] = { type: inferMediaType(url, fallbackType), url };
+    const previousThumbnail = media[existingIndex].thumbnailUrl;
+    const type = inferMediaType(url, fallbackType);
+    media[existingIndex] = {
+      type,
+      url,
+      ...(type === "video" && (cleanThumbnail || previousThumbnail)
+        ? { thumbnailUrl: cleanThumbnail ?? previousThumbnail }
+        : {}),
+    };
     seen.set(key, score);
     return;
   }
 
+  const type = inferMediaType(url, fallbackType);
   seen.set(key, score);
-  media.push({ type: inferMediaType(url, fallbackType), url });
+  media.push({
+    type,
+    url,
+    ...(type === "video" && cleanThumbnail ? { thumbnailUrl: cleanThumbnail } : {}),
+  });
 }
 
 function collectMedia(
@@ -170,18 +190,37 @@ function collectMedia(
   seen: Map<string, number>,
   fallbackType: MediaItem["type"] = "image",
   skipBranches = false,
+  thumbnailUrl?: string,
 ) {
   if (typeof value === "string") {
-    addMediaCandidate(value, media, seen, fallbackType);
+    addMediaCandidate(value, media, seen, fallbackType, thumbnailUrl);
     return;
   }
 
   if (Array.isArray(value)) {
-    for (const item of value) collectMedia(item, media, seen, fallbackType, skipBranches);
+    for (const item of value) {
+      collectMedia(item, media, seen, fallbackType, skipBranches, thumbnailUrl);
+    }
     return;
   }
 
   if (!value || typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  const isVideoRecord =
+    record.media_type === 2 ||
+    Object.keys(record).some((key) =>
+      /video_versions|video_url|playable_url|video_dash_manifest|video_duration/i.test(key),
+    ) ||
+    /video/i.test(String(record.__typename ?? record.__isXIGPolarisMedia ?? ""));
+  const recordThumbnail = isVideoRecord
+    ? Object.entries(record).find(
+        ([key, child]) =>
+          typeof child === "string" &&
+          /display_uri|display_url|thumbnail/i.test(key) &&
+          isPostMediaUrl(child),
+      )?.[1] as string | undefined
+    : thumbnailUrl;
 
   for (const [key, child] of Object.entries(value)) {
     if (
@@ -200,13 +239,14 @@ function collectMedia(
 
     const childType = /video|playable/i.test(key) ? "video" : fallbackType;
     if (typeof child === "string") {
+      if (isVideoRecord && /display_uri|display_url|thumbnail/i.test(key)) continue;
       if (/url|uri|src|candidate/i.test(key)) {
-        addMediaCandidate(child, media, seen, childType);
+        addMediaCandidate(child, media, seen, childType, recordThumbnail);
       }
       continue;
     }
 
-    collectMedia(child, media, seen, childType, skipBranches);
+    collectMedia(child, media, seen, childType, skipBranches, recordThumbnail);
     if (media.length >= MAX_CAROUSEL_ITEMS) return;
   }
 }
@@ -226,6 +266,18 @@ function extractTargetObjects(value: unknown, shortcode: string, matches: Record
     extractTargetObjects(child, shortcode, matches);
     if (matches.length >= 8) return;
   }
+}
+
+function removeVideoThumbnails(media: MediaItem[]) {
+  const thumbnailKeys = new Set(
+    media
+      .filter((item) => item.type === "video" && item.thumbnailUrl)
+      .map((item) => mediaKey(item.thumbnailUrl as string)),
+  );
+
+  return media.filter(
+    (item) => item.type === "video" || !thumbnailKeys.has(mediaKey(item.url)),
+  );
 }
 
 function extractMedia(html: string, shortcode?: string) {
@@ -267,7 +319,13 @@ function extractMedia(html: string, shortcode?: string) {
   const addFallback = (rawUrl: string | undefined, fallbackType: MediaItem["type"]) => {
     if (!rawUrl) return;
     const cleanedUrl = cleanValue(rawUrl);
-    if (restrictFallback && !knownMediaKeys.has(mediaKey(cleanedUrl))) return;
+    if (
+      restrictFallback &&
+      fallbackType !== "video" &&
+      !knownMediaKeys.has(mediaKey(cleanedUrl))
+    ) {
+      return;
+    }
     add(cleanedUrl, fallbackType);
   };
 
@@ -291,15 +349,16 @@ function extractMedia(html: string, shortcode?: string) {
     for (const match of displayMatches) addFallback(match[1], "image");
   }
 
-  return media;
+  return removeVideoThumbnails(media);
 }
 
 function getPostKind(pathname: string) {
-  const [firstSegment] = pathname.replace(/^\/+|\/+$/g, "").split("/");
-  if (firstSegment === "reel") return "reel";
-  if (firstSegment === "tv") return "video";
-  if (firstSegment === "stories") return "story";
-  if (firstSegment === "p") return "post";
+  const segments = pathname.replace(/^\/+|\/+$/g, "").split("/");
+  const marker = segments.find((segment) => ["p", "reel", "tv", "stories"].includes(segment));
+  if (marker === "reel") return "reel";
+  if (marker === "tv") return "video";
+  if (marker === "stories") return "story";
+  if (marker === "p") return "post";
   return "link";
 }
 
@@ -340,33 +399,6 @@ function mediaKey(value: string) {
   } catch {
     return value;
   }
-}
-
-function mergeMedia(...groups: MediaItem[][]) {
-  const seen = new Map<string, number>();
-  const merged: MediaItem[] = [];
-
-  for (const group of groups) {
-    for (const item of group) {
-      const key = mediaKey(item.url);
-      const score = mediaQualityScore(item.url);
-      const existingScore = seen.get(key);
-      const existingIndex = merged.findIndex((candidate) => mediaKey(candidate.url) === key);
-
-      if (existingIndex >= 0) {
-        if (existingScore !== undefined && score <= existingScore) continue;
-        merged[existingIndex] = item;
-        seen.set(key, score);
-        continue;
-      }
-
-      seen.set(key, score);
-      merged.push(item);
-      if (merged.length >= MAX_CAROUSEL_ITEMS) return merged;
-    }
-  }
-
-  return merged;
 }
 
 async function fetchHtml(target: string) {
@@ -441,13 +473,27 @@ export async function POST(request: Request) {
 
     const canonicalUrl = `https://www.instagram.com${getPostPath(sourceUrl)}`;
     const embedUrl = getEmbedUrl(sourceUrl);
-    const fetchTargets = [getPageFetchUrl(sourceUrl), embedUrl];
-    const [htmlChunks, endpointMedia] = await Promise.all([
-      Promise.all(fetchTargets.map(fetchHtml)),
-      fetchCarouselMedia(sourceUrl),
-    ]);
-    const html = htmlChunks.join("\n");
-    const media = mergeMedia(endpointMedia, extractMedia(html, sourceUrl.pathname.split("/").filter(Boolean).pop()));
+    const kind = getPostKind(sourceUrl.pathname);
+    const shortcode = sourceUrl.pathname.split("/").filter(Boolean).pop();
+    const pageHtml = await fetchHtml(getPageFetchUrl(sourceUrl));
+    let html = pageHtml;
+    let extractedMedia = extractMedia(pageHtml, shortcode);
+
+    if (
+      !extractedMedia.length ||
+      (["reel", "video"].includes(kind) && !extractedMedia.some((item) => item.type === "video"))
+    ) {
+      const embedHtml = await fetchHtml(embedUrl);
+      html = `${pageHtml}\n${embedHtml}`;
+      extractedMedia = extractMedia(html, shortcode);
+    }
+
+    const endpointMedia = extractedMedia.length ? [] : await fetchCarouselMedia(sourceUrl);
+    const media = extractedMedia.length
+      ? ["reel", "video"].includes(kind)
+        ? extractedMedia.filter((item) => item.type === "video")
+        : extractedMedia
+      : endpointMedia;
     const caption = extractMeta(html, "og:description");
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
@@ -456,7 +502,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         status: "embed-only",
-        kind: getPostKind(sourceUrl.pathname),
+        kind,
         canonicalUrl: discoveredCanonical ?? canonicalUrl,
         embedUrl,
         caption,
@@ -470,7 +516,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       status: "ready",
-      kind: getPostKind(sourceUrl.pathname),
+      kind,
       canonicalUrl: discoveredCanonical ?? canonicalUrl,
       embedUrl,
       caption,

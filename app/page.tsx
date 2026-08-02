@@ -66,11 +66,31 @@ function getDownloadFileName(media: MediaItem, index: number) {
   return `downflow-${index + 1}.${media.type === "video" ? "mp4" : "png"}`;
 }
 
-async function prepareDownloadBlob(media: MediaItem, index: number) {
-  const response = await fetch(getDownloadUrl(media, index));
-  if (!response.ok) throw new Error("Download proxy unavailable");
+async function fetchMediaBlob(media: MediaItem, index: number) {
+  try {
+    const directResponse = await fetch(media.url, {
+      cache: "no-store",
+      redirect: "follow",
+    });
+    const contentType = directResponse.headers.get("content-type") ?? "";
+    const expectedType = media.type === "video" ? "video/" : "image/";
 
-  const sourceBlob = await response.blob();
+    if (directResponse.ok && contentType.startsWith(expectedType)) {
+      return directResponse.blob();
+    }
+  } catch {
+    // Some CDN variants reject browser fetches; use the same-origin fallback below.
+  }
+
+  const fallbackResponse = await fetch(getDownloadUrl(media, index), {
+    cache: "no-store",
+  });
+  if (!fallbackResponse.ok) throw new Error("Download proxy unavailable");
+  return fallbackResponse.blob();
+}
+
+async function prepareDownloadBlob(media: MediaItem, index: number) {
+  const sourceBlob = await fetchMediaBlob(media, index);
   if (media.type === "video") return sourceBlob;
 
   const sourceUrl = URL.createObjectURL(sourceBlob);
