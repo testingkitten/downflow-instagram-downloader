@@ -116,7 +116,7 @@ function isPostMediaUrl(value: string) {
     const host = url.hostname.toLowerCase();
     const imagePath = /\/v\/t51\.[^/]+-15\//i.test(url.pathname);
     const videoPath =
-      /\/v\/t2\//i.test(url.pathname) && /\.(mp4|mov|m4v)(?:$|[?#])/i.test(value);
+      /\/v\/t\d+\//i.test(url.pathname) && /\.(mp4|mov|m4v)(?:$|[?#])/i.test(value);
     return (
       isMediaUrl(value) &&
       (/^scontent(?:[.-])/i.test(host) || host.endsWith(".fbcdn.net")) &&
@@ -131,6 +131,78 @@ function inferMediaType(url: string, fallback: MediaItem["type"] = "image") {
   return /\.(mp4|mov|m4v)(?:$|[?#])/i.test(url) || /video/i.test(url)
     ? "video"
     : fallback;
+}
+
+function decodeVideoMetadata(value: string) {
+  try {
+    const url = new URL(value);
+    let encoded = url.searchParams.get("efg");
+    if (!encoded) return "";
+
+    for (let index = 0; index < 2; index += 1) {
+      try {
+        encoded = decodeURIComponent(encoded);
+      } catch {
+        break;
+      }
+    }
+
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    return atob(padded);
+  } catch {
+    return "";
+  }
+}
+
+function isAudioBearingProgressiveVideoUrl(value: string) {
+  const metadata = decodeVideoMetadata(value);
+  return /xpv_progressive|dash_baseline/i.test(metadata);
+}
+
+function progressiveVideoItemKey(value: string) {
+  const metadata = decodeVideoMetadata(value);
+  const assetMatch = metadata.match(/"xpv_asset_id"\s*:\s*(\d+)/i);
+  return assetMatch?.[1] ? `asset:${assetMatch[1]}` : mediaKey(value);
+}
+
+function progressiveVideoQualityScore(value: string) {
+  const metadata = decodeVideoMetadata(value);
+  const bitrateMatch = metadata.match(/"bitrate"\s*:\s*(\d+)/i);
+  const resolutionMatch = metadata.match(/(?:^|[._-])(\d{3,4})(?:[._-]|$)/);
+  const bitrate = bitrateMatch ? Number(bitrateMatch[1]) : 0;
+  const resolution = resolutionMatch ? Number(resolutionMatch[1]) : 0;
+  return resolution * 1_000_000 + bitrate;
+}
+
+function extractAudioBearingProgressiveVideoUrls(html: string) {
+  const normalizedHtml = cleanValue(html);
+  const candidates = new Map<string, { url: string; score: number; order: number }>();
+
+  const urlMatches = normalizedHtml.matchAll(
+    /https?:\/\/[^"'\\\s<>]+?\.(?:mp4|mov|m4v)(?:\?[^"'\\\s<>]*)?/gi,
+  );
+
+  let order = 0;
+  for (const match of urlMatches) {
+    const url = cleanValue(match[0]);
+    const itemKey = progressiveVideoItemKey(url);
+    if (!isPostMediaUrl(url) || !isAudioBearingProgressiveVideoUrl(url)) {
+      continue;
+    }
+
+    const score = progressiveVideoQualityScore(url);
+    const existing = candidates.get(itemKey);
+    if (!existing || score > existing.score) {
+      candidates.set(itemKey, { url, score, order });
+    }
+    order += 1;
+  }
+
+  return [...candidates.values()]
+    .sort((left, right) => left.order - right.order)
+    .slice(0, MAX_CAROUSEL_ITEMS)
+    .map((candidate) => candidate.url);
 }
 
 function mediaQualityScore(value: string) {
@@ -395,16 +467,24 @@ function extractMedia(html: string, shortcode?: string) {
     }
   }
 
+  const progressiveVideoUrls = extractAudioBearingProgressiveVideoUrls(html);
   const highestQualityVideoUrls = extractHighestQualityVideoUrls(html);
-  if (highestQualityVideoUrls.length) {
-    const selectedVideoUrls = new Set(highestQualityVideoUrls);
+  const preferredVideoUrls = progressiveVideoUrls.length
+    ? progressiveVideoUrls
+    : highestQualityVideoUrls;
+
+  if (preferredVideoUrls.length) {
+    const selectedVideoKeys = new Set(preferredVideoUrls.map((url) => mediaKey(url)));
     for (let index = media.length - 1; index >= 0; index -= 1) {
-      if (media[index].type === "video" && !selectedVideoUrls.has(media[index].url)) {
+      if (
+        media[index].type === "video" &&
+        !selectedVideoKeys.has(mediaKey(media[index].url))
+      ) {
         media.splice(index, 1);
       }
     }
   }
-  for (const url of highestQualityVideoUrls) add(url, "video");
+  for (const url of preferredVideoUrls) add(url, "video");
 
   const restrictFallback = media.length > 0;
   const knownMediaKeys = new Set(media.map((item) => mediaKey(item.url)));

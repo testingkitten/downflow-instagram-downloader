@@ -616,8 +616,12 @@ function VideoPlayer({ media, label }: { media: MediaItem; label: string }) {
   const toggleMute = () => {
     const video = videoRef.current;
     if (!video) return;
-    video.muted = !video.muted;
-    setMuted(video.muted);
+    const nextMuted = !video.muted;
+    video.muted = nextMuted;
+    setMuted(nextMuted);
+    if (!nextMuted && video.paused) {
+      void video.play().catch(() => undefined);
+    }
   };
 
   const progress = duration ? Math.min((currentTime / duration) * 100, 100) : 0;
