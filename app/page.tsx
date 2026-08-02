@@ -274,6 +274,7 @@ export default function Home() {
   const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(false);
   const [autoDownloadPreferenceReady, setAutoDownloadPreferenceReady] = useState(false);
   const [shareDownloadComplete, setShareDownloadComplete] = useState(false);
+  const [isShareLaunch, setIsShareLaunch] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const lastLookupRef = useRef("");
@@ -298,6 +299,11 @@ export default function Home() {
     if (!("serviceWorker" in navigator)) return;
     void navigator.serviceWorker.register("/sw.js", { scope: "/" });
   }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("share-handoff", isShareLaunch);
+    return () => document.documentElement.classList.remove("share-handoff");
+  }, [isShareLaunch]);
 
   useEffect(() => {
     return () => {
@@ -468,6 +474,7 @@ export default function Home() {
       setDownloadMessage("");
       setDownloadProgress(null);
       setShareDownloadComplete(false);
+      if (!fromShare) setIsShareLaunch(false);
       setViewState("loading");
 
       try {
@@ -488,9 +495,12 @@ export default function Home() {
           } else if (autoDownloadPreferenceReady && autoDownloadEnabled) {
             queueDownloads(payload.media, payload);
           }
+        } else if (fromShare) {
+          setIsShareLaunch(false);
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
+        if (fromShare) setIsShareLaunch(false);
         setViewState("error");
         setErrorMessage(error instanceof Error ? error.message : "That link could not be read.");
       }
@@ -504,6 +514,7 @@ export default function Home() {
     if (!sharedUrl || sharedLookupRef.current === sharedUrl) return;
 
     sharedLookupRef.current = sharedUrl;
+    setIsShareLaunch(true);
     window.history.replaceState(null, "", window.location.pathname);
     void resolveUrl(sharedUrl, true, true);
   }, [autoDownloadPreferenceReady, resolveUrl]);
@@ -564,6 +575,7 @@ export default function Home() {
     setDownloadMessage("");
     setDownloadProgress(null);
     setShareDownloadComplete(false);
+    setIsShareLaunch(false);
     setViewState("idle");
     inputRef.current?.focus();
   };
@@ -581,7 +593,7 @@ export default function Home() {
   };
 
   return (
-    <main className="site-frame">
+    <main className={`site-frame ${isShareLaunch ? "is-share-launch" : ""}`}>
       <nav className="topbar" aria-label="Primary">
         <button
           className="refresh-button"

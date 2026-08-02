@@ -31,6 +31,11 @@ html {
   scroll-behavior: smooth;
 }
 
+html.share-handoff,
+html.share-handoff body {
+  background: transparent;
+}
+
 body {
   min-width: 320px;
   margin: 0;
@@ -83,6 +88,13 @@ a {
   margin: 0 auto;
   overflow: hidden;
   background: var(--color-paper-white);
+}
+
+.site-frame.is-share-launch {
+  visibility: hidden;
+  pointer-events: none;
+  background: transparent;
+  opacity: 0;
 }
 
 .topbar {
