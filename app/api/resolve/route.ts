@@ -134,6 +134,11 @@ function getEmbedUrl(url: URL) {
   return `https://www.instagram.com${path}/embed/captioned/`;
 }
 
+function getMediaEndpointUrl(url: URL) {
+  const path = url.pathname.replace(/\/$/, "");
+  return `https://www.instagram.com${path}/media/?size=l`;
+}
+
 async function fetchHtml(target: string) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
@@ -151,6 +156,31 @@ async function fetchHtml(target: string) {
     return await Promise.race([request, timeoutFallback]);
   } catch {
     return "";
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchMediaEndpoint(target: string): Promise<MediaItem | undefined> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(target, {
+      headers: REQUEST_HEADERS,
+      redirect: "follow",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const contentType = response.headers.get("content-type") ?? "";
+    const isImage = contentType.startsWith("image/");
+    const isVideo = contentType.startsWith("video/");
+    await response.body?.cancel();
+
+    if (!response.ok || (!isImage && !isVideo)) return undefined;
+    return { type: isVideo ? "video" : "image", url: target };
+  } catch {
+    return undefined;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -174,10 +204,17 @@ export async function POST(request: Request) {
 
     const canonicalUrl = `https://www.instagram.com${sourceUrl.pathname}`;
     const embedUrl = getEmbedUrl(sourceUrl);
+    const mediaEndpointUrl = getMediaEndpointUrl(sourceUrl);
     const fetchTargets = [canonicalUrl, embedUrl];
-    const htmlChunks = await Promise.all(fetchTargets.map(fetchHtml));
+    const [htmlChunks, mediaEndpoint] = await Promise.all([
+      Promise.all(fetchTargets.map(fetchHtml)),
+      getPostKind(sourceUrl.pathname) === "story"
+        ? Promise.resolve(undefined)
+        : fetchMediaEndpoint(mediaEndpointUrl),
+    ]);
     const html = htmlChunks.join("\n");
     const media = extractMedia(html);
+    if (mediaEndpoint) media.unshift(mediaEndpoint);
     const caption = extractMeta(html, "og:description");
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
