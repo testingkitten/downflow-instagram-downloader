@@ -57,6 +57,15 @@ function labelForKind(kind: string) {
   return "post";
 }
 
+function getDownloadUrl(media: MediaItem, index: number) {
+  const name = `downflow-${index + 1}`;
+  return `/api/download?url=${encodeURIComponent(media.url)}&name=${name}`;
+}
+
+function getDownloadFileName(media: MediaItem, index: number) {
+  return `downflow-${index + 1}.${media.type === "video" ? "mp4" : "jpg"}`;
+}
+
 export default function Home() {
   const [url, setUrl] = useState("");
   const [viewState, setViewState] = useState<ViewState>("idle");
@@ -69,18 +78,20 @@ export default function Home() {
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const lastLookupRef = useRef("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pendingDownloadsRef = useRef<number[]>([]);
 
   useEffect(() => {
     return () => {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       requestRef.current?.abort();
+      pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
     };
   }, []);
 
   const downloadMedia = useCallback(
     async (media: MediaItem, index = 0) => {
-      const name = `downflow-${index + 1}`;
-      const proxyUrl = `/api/download?url=${encodeURIComponent(media.url)}&name=${name}`;
+      const proxyUrl = getDownloadUrl(media, index);
 
       try {
         const response = await fetch(proxyUrl);
@@ -89,7 +100,7 @@ export default function Home() {
         const objectUrl = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = objectUrl;
-        anchor.download = `${name}.${media.type === "video" ? "mp4" : "jpg"}`;
+        anchor.download = getDownloadFileName(media, index);
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -101,6 +112,32 @@ export default function Home() {
       }
     },
     [],
+  );
+
+  const triggerImmediateDownload = useCallback((media: MediaItem, index: number) => {
+    const anchor = document.createElement("a");
+    anchor.href = getDownloadUrl(media, index);
+    anchor.download = getDownloadFileName(media, index);
+    anchor.rel = "noreferrer";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }, []);
+
+  const queueImmediateDownloads = useCallback(
+    (media: MediaItem[]) => {
+      pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      pendingDownloadsRef.current = media.map((item, index) =>
+        window.setTimeout(() => triggerImmediateDownload(item, index), index * 180),
+      );
+      setDownloadMessage(
+        media.length === 1
+          ? "Download started. Check your browser downloads."
+          : `${media.length} downloads started. Check your browser downloads.`,
+      );
+    },
+    [triggerImmediateDownload],
   );
 
   const resolveUrl = useCallback(
@@ -117,6 +154,8 @@ export default function Home() {
       if (!force && lastLookupRef.current === normalized) return;
       lastLookupRef.current = normalized;
       requestRef.current?.abort();
+      pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      pendingDownloadsRef.current = [];
       const controller = new AbortController();
       requestRef.current = controller;
       setUrl(normalized);
@@ -138,9 +177,9 @@ export default function Home() {
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
 
-        if (payload.status === "ready" && payload.media[0] && autoDownloadRef.current !== normalized) {
+        if (payload.status === "ready" && payload.media.length && autoDownloadRef.current !== normalized) {
           autoDownloadRef.current = normalized;
-          window.setTimeout(() => downloadMedia(payload.media[0]), 80);
+          queueImmediateDownloads(payload.media);
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -148,7 +187,7 @@ export default function Home() {
         setErrorMessage(error instanceof Error ? error.message : "That link could not be read.");
       }
     },
-    [downloadMedia],
+    [downloadMedia, queueImmediateDownloads],
   );
 
   const queueLookup = (value: string) => {
@@ -184,11 +223,14 @@ export default function Home() {
     requestRef.current?.abort();
     lastLookupRef.current = "";
     autoDownloadRef.current = "";
+    pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    pendingDownloadsRef.current = [];
     setUrl("");
     setResult(null);
     setErrorMessage("");
     setDownloadMessage("");
     setViewState("idle");
+    inputRef.current?.focus();
   };
 
   return (
@@ -238,6 +280,8 @@ export default function Home() {
               <LinkSimple size={19} weight="regular" aria-hidden="true" />
               <input
                 id="instagram-url"
+                ref={inputRef}
+                autoFocus
                 value={url}
                 onChange={(event) => {
                   const nextValue = event.target.value;
