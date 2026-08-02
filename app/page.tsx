@@ -2,6 +2,7 @@
 
 import {
   ArrowSquareOut,
+  ArrowClockwise,
   ArrowUpRight,
   ClipboardText,
   DownloadSimple,
@@ -160,6 +161,18 @@ function getDownloadFileName(media: MediaItem, baseName: string) {
   return `${baseName}.${media.type === "video" ? "mp4" : "png"}`;
 }
 
+function startNativeDownload(media: MediaItem, source: DownloadSource) {
+  const baseName = getDownloadBaseName(source);
+  const anchor = document.createElement("a");
+  anchor.href = getDownloadUrl(media, baseName);
+  anchor.download = getDownloadFileName(media, baseName);
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
 async function readResponseBlob(response: Response, onProgress: DownloadProgressCallback) {
   const contentType = response.headers.get("content-type") ?? undefined;
   const contentLength = Number(response.headers.get("content-length"));
@@ -268,6 +281,7 @@ export default function Home() {
   const pendingDownloadsRef = useRef<number[]>([]);
   const downloadSequenceRef = useRef(0);
   const progressResetRef = useRef<number | null>(null);
+  const shareCloseRef = useRef<number | null>(null);
   const sharedLookupRef = useRef("");
 
   useEffect(() => {
@@ -292,6 +306,7 @@ export default function Home() {
       requestRef.current?.abort();
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       if (progressResetRef.current) window.clearTimeout(progressResetRef.current);
+      if (shareCloseRef.current) window.clearTimeout(shareCloseRef.current);
     };
   }, []);
 
@@ -372,7 +387,7 @@ export default function Home() {
   );
 
   const queueDownloads = useCallback(
-    (media: MediaItem[], source: DownloadSource, onComplete?: () => void) => {
+    (media: MediaItem[], source: DownloadSource) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
@@ -394,7 +409,6 @@ export default function Home() {
 
         if (index === media.length - 1) {
           setDownloadMessage("Downloads complete.");
-          onComplete?.();
           return;
         }
 
@@ -408,6 +422,22 @@ export default function Home() {
     },
     [downloadMedia],
   );
+
+  const handoffShareDownloads = useCallback((media: MediaItem[], source: DownloadSource) => {
+    media.forEach((item) => startNativeDownload(item, source));
+    setDownloadMessage("Downloads sent to device.");
+    setShareDownloadComplete(true);
+
+    if (shareCloseRef.current) window.clearTimeout(shareCloseRef.current);
+    shareCloseRef.current = window.setTimeout(() => {
+      try {
+        window.close();
+      } catch {
+        // Browsers may refuse to close a PWA window they did not open.
+      }
+      shareCloseRef.current = null;
+    }, 180);
+  }, []);
 
   const resolveUrl = useCallback(
     async (rawValue: string, force = false, fromShare = false) => {
@@ -452,27 +482,12 @@ export default function Home() {
 
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
-        if (
-          payload.status === "ready" &&
-          payload.media.length &&
-          (fromShare || (autoDownloadPreferenceReady && autoDownloadEnabled))
-        ) {
-          queueDownloads(
-            payload.media,
-            payload,
-            fromShare
-              ? () => {
-                  setShareDownloadComplete(true);
-                  window.setTimeout(() => {
-                    try {
-                      window.close();
-                    } catch {
-                      // Browsers may refuse to close a PWA window they did not open.
-                    }
-                  }, 350);
-                }
-              : undefined,
-          );
+        if (payload.status === "ready" && payload.media.length) {
+          if (fromShare) {
+            handoffShareDownloads(payload.media, payload);
+          } else if (autoDownloadPreferenceReady && autoDownloadEnabled) {
+            queueDownloads(payload.media, payload);
+          }
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -480,7 +495,7 @@ export default function Home() {
         setErrorMessage(error instanceof Error ? error.message : "That link could not be read.");
       }
     },
-    [autoDownloadEnabled, autoDownloadPreferenceReady, queueDownloads],
+    [autoDownloadEnabled, autoDownloadPreferenceReady, handoffShareDownloads, queueDownloads],
   );
 
   useEffect(() => {
@@ -533,10 +548,16 @@ export default function Home() {
     lastLookupRef.current = "";
     pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
     pendingDownloadsRef.current = [];
+    sharedLookupRef.current = "";
     if (progressResetRef.current) {
       window.clearTimeout(progressResetRef.current);
       progressResetRef.current = null;
     }
+    if (shareCloseRef.current) {
+      window.clearTimeout(shareCloseRef.current);
+      shareCloseRef.current = null;
+    }
+    window.history.replaceState(null, "", window.location.pathname);
     setUrl("");
     setResult(null);
     setErrorMessage("");
@@ -562,6 +583,15 @@ export default function Home() {
   return (
     <main className="site-frame">
       <nav className="topbar" aria-label="Primary">
+        <button
+          className="refresh-button"
+          type="button"
+          onClick={clearAll}
+          aria-label="Clear and refresh"
+          title="Clear and refresh"
+        >
+          <ArrowClockwise size={18} weight="regular" aria-hidden="true" />
+        </button>
         <a className="brand" href="#top" aria-label="Instagram Downloader home">
           <span className="brand-label">Instagram Downloader</span>
         </a>
