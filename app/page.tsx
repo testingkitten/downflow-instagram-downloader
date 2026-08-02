@@ -125,19 +125,45 @@ export default function Home() {
     anchor.remove();
   }, []);
 
+  const triggerImmediateZipDownload = useCallback((media: MediaItem[]) => {
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/api/download-all";
+    form.target = "_self";
+    form.style.display = "none";
+
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "items";
+    input.value = JSON.stringify(media.map(({ type, url }) => ({ type, url })));
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }, []);
+
   const queueImmediateDownloads = useCallback(
     (media: MediaItem[]) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      pendingDownloadsRef.current = media.map((item, index) =>
-        window.setTimeout(() => triggerImmediateDownload(item, index), index * 180),
-      );
+
+      if (media.length > 1) {
+        pendingDownloadsRef.current = [
+          window.setTimeout(() => triggerImmediateZipDownload(media), 0),
+        ];
+        setDownloadMessage(
+          `${media.length} files bundled into one ZIP. Check your browser downloads.`,
+        );
+        return;
+      }
+
+      pendingDownloadsRef.current = [
+        window.setTimeout(() => triggerImmediateDownload(media[0], 0), 0),
+      ];
       setDownloadMessage(
-        media.length === 1
-          ? "Download started. Check your browser downloads."
-          : `${media.length} downloads started. Check your browser downloads.`,
+        "Download started. Check your browser downloads.",
       );
     },
-    [triggerImmediateDownload],
+    [triggerImmediateDownload, triggerImmediateZipDownload],
   );
 
   const resolveUrl = useCallback(
@@ -187,7 +213,7 @@ export default function Home() {
         setErrorMessage(error instanceof Error ? error.message : "That link could not be read.");
       }
     },
-    [downloadMedia, queueImmediateDownloads],
+    [queueImmediateDownloads],
   );
 
   const queueLookup = (value: string) => {
@@ -218,6 +244,21 @@ export default function Home() {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   };
+
+  const downloadAllMedia = useCallback(
+    (media: MediaItem[]) => {
+      if (media.length > 1) {
+        triggerImmediateZipDownload(media);
+        setDownloadMessage(
+          `${media.length} files bundled into one ZIP. Check your browser downloads.`,
+        );
+        return;
+      }
+
+      if (media[0]) void downloadMedia(media[0], 0);
+    },
+    [downloadMedia, triggerImmediateZipDownload],
+  );
 
   const clearAll = () => {
     requestRef.current?.abort();
@@ -337,7 +378,7 @@ export default function Home() {
             <h2>{viewState === "idle" ? "Nothing here yet." : viewState === "loading" ? "Looking for media." : "Your media is ready."}</h2>
           </div>
           {result?.media.length ? (
-            <button className="quiet-button" type="button" onClick={() => result.media.forEach((media, index) => void downloadMedia(media, index))}>
+            <button className="quiet-button" type="button" onClick={() => downloadAllMedia(result.media)}>
               <DownloadSimple size={17} weight="bold" />
               Download all
             </button>

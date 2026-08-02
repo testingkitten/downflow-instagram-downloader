@@ -7,7 +7,7 @@ A focused Next.js utility for resolving media exposed by public Instagram post, 
 - Accepts a full Instagram URL in the input field.
 - Resolves public page metadata, Instagram's public media endpoint, and public embed HTML on the server.
 - Shows image and video media when Instagram exposes direct media URLs.
-- Starts every resolved media download immediately, then keeps manual save controls available.
+- Starts one download immediately for each link; carousels are bundled into a ZIP so every item is saved together, then keeps manual save controls available.
 - Falls back to the public Instagram embed when direct media is not exposed.
 
 ## Important limitation
