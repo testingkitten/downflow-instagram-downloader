@@ -74,6 +74,21 @@ function extractCanonical(html: string) {
   return undefined;
 }
 
+function extractUsername(html: string, description?: string) {
+  const descriptionMatch = description?.match(/-\s*([a-z0-9._-]{1,50})\s+on\s+/i);
+  if (descriptionMatch?.[1]) return descriptionMatch[1];
+
+  const ownerMatch = html.match(
+    /["\\']owner["\\']\s*:\s*\{[\s\S]{0,600}?["\\']username["\\']\s*:\s*["\\']([^"\\']+)["\\']/i,
+  );
+  if (ownerMatch?.[1]) return ownerMatch[1];
+
+  const usernameMatch = html.match(
+    /["\\']username["\\']\s*:\s*["\\']([a-z0-9._-]{1,50})["\\']/i,
+  );
+  return usernameMatch?.[1];
+}
+
 function isMediaUrl(value: string) {
   try {
     const url = new URL(value);
@@ -362,6 +377,38 @@ function getPostKind(pathname: string) {
   return "link";
 }
 
+function getSourceIdentity(value: string, fallbackUsername?: string, fallbackId?: string) {
+  try {
+    const segments = new URL(value).pathname
+      .replace(/^\/+|\/+$/g, "")
+      .split("/")
+      .filter(Boolean);
+    const markerIndex = segments.findIndex((segment) =>
+      ["p", "reel", "tv", "stories"].includes(segment),
+    );
+    const marker = segments[markerIndex];
+    const username =
+      fallbackUsername ??
+      (marker === "stories"
+        ? segments[markerIndex + 1]
+        : markerIndex > 0
+          ? segments[markerIndex - 1]
+          : "instagram");
+    const postId =
+      fallbackId ?? segments[markerIndex + 1] ?? segments[segments.length - 1] ?? "media";
+
+    return {
+      sourceUsername: username || "instagram",
+      sourceId: postId || "media",
+    };
+  } catch {
+    return {
+      sourceUsername: fallbackUsername ?? "instagram",
+      sourceId: fallbackId ?? "media",
+    };
+  }
+}
+
 function getEmbedUrl(url: URL) {
   const path = getPostPath(url).replace(/\/$/, "");
   return `https://www.instagram.com${path}/embed/captioned/`;
@@ -488,23 +535,39 @@ export async function POST(request: Request) {
       extractedMedia = extractMedia(html, shortcode);
     }
 
-    const endpointMedia = extractedMedia.length ? [] : await fetchCarouselMedia(sourceUrl);
-    const media = extractedMedia.length
-      ? ["reel", "video"].includes(kind)
-        ? extractedMedia.filter((item) => item.type === "video")
-        : extractedMedia
-      : endpointMedia;
     const caption = extractMeta(html, "og:description");
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
+    const resolvedCanonical = discoveredCanonical ?? canonicalUrl;
+    let resolvedKind = kind;
+
+    try {
+      resolvedKind = getPostKind(new URL(resolvedCanonical, sourceUrl).pathname);
+    } catch {
+      // Keep the kind inferred from the submitted URL when canonical parsing fails.
+    }
+
+    const resolvedEmbedUrl = getEmbedUrl(new URL(resolvedCanonical, sourceUrl));
+    const identity = getSourceIdentity(
+      resolvedCanonical,
+      extractUsername(html, caption),
+      shortcode,
+    );
+    const endpointMedia = extractedMedia.length ? [] : await fetchCarouselMedia(sourceUrl);
+    const media = extractedMedia.length
+      ? ["reel", "video"].includes(resolvedKind)
+        ? extractedMedia.filter((item) => item.type === "video")
+        : extractedMedia
+      : endpointMedia;
 
     if (!media.length) {
       return NextResponse.json({
         ok: true,
         status: "embed-only",
-        kind,
-        canonicalUrl: discoveredCanonical ?? canonicalUrl,
-        embedUrl,
+        kind: resolvedKind,
+        canonicalUrl: resolvedCanonical,
+        embedUrl: resolvedEmbedUrl,
+        ...identity,
         caption,
         title,
         media: [],
@@ -516,9 +579,10 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       status: "ready",
-      kind,
-      canonicalUrl: discoveredCanonical ?? canonicalUrl,
-      embedUrl,
+      kind: resolvedKind,
+      canonicalUrl: resolvedCanonical,
+      embedUrl: resolvedEmbedUrl,
+      ...identity,
       caption,
       title,
       media,

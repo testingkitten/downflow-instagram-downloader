@@ -2,6 +2,7 @@
 
 import {
   ArrowUpRight,
+  ClipboardText,
   DownloadSimple,
   LinkSimple,
   Play,
@@ -22,12 +23,15 @@ type ResolveResult = {
   kind: string;
   canonicalUrl: string;
   embedUrl: string;
+  sourceUsername?: string;
+  sourceId?: string;
   caption?: string;
   title?: string;
   media: MediaItem[];
   message?: string;
 };
 
+type DownloadSource = Pick<ResolveResult, "canonicalUrl" | "sourceUsername" | "sourceId">;
 type ViewState = "idle" | "loading" | "success" | "embed-only" | "error";
 
 const INSTAGRAM_HOSTS = new Set([
@@ -54,16 +58,70 @@ function labelForKind(kind: string) {
   return "post";
 }
 
-function getDownloadUrl(media: MediaItem, index: number) {
-  const name = `downflow-${index + 1}`;
-  return `/api/download?url=${encodeURIComponent(media.url)}&name=${name}`;
+function sanitizeFilePart(value: string) {
+  return (
+    value
+      .replace(/[^a-z0-9._-]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "instagram"
+  );
 }
 
-function getDownloadFileName(media: MediaItem, index: number) {
-  return `downflow-${index + 1}.${media.type === "video" ? "mp4" : "png"}`;
+function randomToken() {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const values = new Uint32Array(6);
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(values);
+    return Array.from(values, (value) => alphabet[value % alphabet.length]).join("");
+  }
+
+  return Array.from({ length: 6 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
 }
 
-async function fetchMediaBlob(media: MediaItem, index: number) {
+function getSourceIdentity(source: DownloadSource) {
+  let segments: string[] = [];
+  try {
+    segments = new URL(source.canonicalUrl).pathname
+      .replace(/^\/+|\/+$/g, "")
+      .split("/")
+      .filter(Boolean);
+  } catch {
+    // Use the API-provided identity when the canonical URL cannot be parsed.
+  }
+
+  const markerIndex = segments.findIndex((segment) =>
+    ["p", "reel", "tv", "stories"].includes(segment),
+  );
+  const marker = segments[markerIndex];
+  const fallbackUsername =
+    marker === "stories"
+      ? segments[markerIndex + 1]
+      : markerIndex > 0
+        ? segments[markerIndex - 1]
+        : "instagram";
+  const fallbackId = segments[markerIndex + 1] ?? segments[segments.length - 1] ?? "media";
+
+  return {
+    username: sanitizeFilePart(source.sourceUsername ?? fallbackUsername ?? "instagram"),
+    postId: sanitizeFilePart(source.sourceId ?? fallbackId),
+  };
+}
+
+function getDownloadBaseName(source: DownloadSource) {
+  const identity = getSourceIdentity(source);
+  return `${identity.username}-${identity.postId}-${randomToken()}`;
+}
+
+function getDownloadUrl(media: MediaItem, baseName: string) {
+  return `/api/download?url=${encodeURIComponent(media.url)}&name=${encodeURIComponent(baseName)}`;
+}
+
+function getDownloadFileName(media: MediaItem, baseName: string) {
+  return `${baseName}.${media.type === "video" ? "mp4" : "png"}`;
+}
+
+async function fetchMediaBlob(media: MediaItem, baseName: string) {
   try {
     const directResponse = await fetch(media.url, {
       cache: "no-store",
@@ -79,15 +137,15 @@ async function fetchMediaBlob(media: MediaItem, index: number) {
     // Some CDN variants reject browser fetches; use the same-origin fallback below.
   }
 
-  const fallbackResponse = await fetch(getDownloadUrl(media, index), {
+  const fallbackResponse = await fetch(getDownloadUrl(media, baseName), {
     cache: "no-store",
   });
   if (!fallbackResponse.ok) throw new Error("Download proxy unavailable");
   return fallbackResponse.blob();
 }
 
-async function prepareDownloadBlob(media: MediaItem, index: number) {
-  const sourceBlob = await fetchMediaBlob(media, index);
+async function prepareDownloadBlob(media: MediaItem, baseName: string) {
+  const sourceBlob = await fetchMediaBlob(media, baseName);
   if (media.type === "video") return sourceBlob;
 
   const sourceUrl = URL.createObjectURL(sourceBlob);
@@ -122,6 +180,7 @@ export default function Home() {
   const [result, setResult] = useState<ResolveResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [downloadMessage, setDownloadMessage] = useState("");
+  const [pasteState, setPasteState] = useState<"idle" | "pasting">("idle");
   const autoDownloadRef = useRef("");
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
@@ -140,13 +199,15 @@ export default function Home() {
   }, []);
 
   const downloadMedia = useCallback(
-    async (media: MediaItem, index = 0) => {
+    async (media: MediaItem, source: DownloadSource) => {
+      const baseName = getDownloadBaseName(source);
+
       try {
-        const blob = await prepareDownloadBlob(media, index);
+        const blob = await prepareDownloadBlob(media, baseName);
         const objectUrl = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = objectUrl;
-        anchor.download = getDownloadFileName(media, index);
+        anchor.download = getDownloadFileName(media, baseName);
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -161,7 +222,7 @@ export default function Home() {
   );
 
   const queueImmediateDownloads = useCallback(
-    (media: MediaItem[]) => {
+    (media: MediaItem[], source: DownloadSource) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
@@ -171,7 +232,7 @@ export default function Home() {
       const downloadNext = async (index: number) => {
         if (downloadSequenceRef.current !== sequence || !media[index]) return;
 
-        await downloadMedia(media[index], index);
+        await downloadMedia(media[index], source);
         if (downloadSequenceRef.current !== sequence) return;
 
         if (index === media.length - 1) {
@@ -230,7 +291,7 @@ export default function Home() {
 
         if (payload.status === "ready" && payload.media.length && autoDownloadRef.current !== normalized) {
           autoDownloadRef.current = normalized;
-          queueImmediateDownloads(payload.media);
+          queueImmediateDownloads(payload.media, payload);
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -252,9 +313,25 @@ export default function Home() {
     void resolveUrl(url, true);
   };
 
+  const handlePaste = async () => {
+    setPasteState("pasting");
+    setErrorMessage("");
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      if (!clipboardText.trim()) throw new Error("The clipboard is empty.");
+      setUrl(clipboardText);
+      await resolveUrl(clipboardText, true);
+    } catch (error) {
+      setViewState("error");
+      setErrorMessage(error instanceof Error ? error.message : "Clipboard access is unavailable.");
+    } finally {
+      setPasteState("idle");
+    }
+  };
+
   const downloadAllMedia = useCallback(
-    (media: MediaItem[]) => {
-      queueImmediateDownloads(media);
+    (media: MediaItem[], source: DownloadSource) => {
+      queueImmediateDownloads(media, source);
     },
     [queueImmediateDownloads],
   );
@@ -277,9 +354,10 @@ export default function Home() {
   return (
     <main className="site-frame">
       <nav className="topbar" aria-label="Primary">
-        <a className="brand" href="#top" aria-label="insta download home">
-          insta download
+        <a className="brand" href="#top" aria-label="Instagram Downloader home">
+          Instagram Downloader
         </a>
+        <span className="brand-rule" aria-hidden="true" />
       </nav>
 
       <section className="hero-grid" id="top">
@@ -302,6 +380,7 @@ export default function Home() {
                   setViewState("idle");
                   queueLookup(nextValue);
                 }}
+                placeholder="Paste an Instagram link"
                 autoComplete="url"
                 spellCheck={false}
                 aria-invalid={viewState === "error"}
@@ -312,23 +391,20 @@ export default function Home() {
                 </button>
               ) : null}
               <button
-                className="submit-button"
-                type="submit"
-                disabled={viewState === "loading"}
-                aria-label={viewState === "loading" ? "Loading" : "Download media"}
+                className="paste-button"
+                type="button"
+                onClick={handlePaste}
+                disabled={pasteState === "pasting" || viewState === "loading"}
               >
-                {viewState === "loading" ? (
-                  <span className="button-spinner" aria-hidden="true" />
-                ) : (
-                  <ArrowUpRight size={18} weight="bold" />
-                )}
+                <ClipboardText size={17} weight="regular" aria-hidden="true" />
+                {pasteState === "pasting" ? "Pasting" : "Paste Link"}
               </button>
             </div>
             {viewState === "error" ? (
-              <span className="error-state" role="alert">
+              <p className="error-note" role="alert">
                 <WarningCircle size={15} weight="fill" aria-hidden="true" />
-                <span className="sr-only">{errorMessage}</span>
-              </span>
+                {errorMessage}
+              </p>
             ) : null}
           </form>
         </div>
@@ -337,11 +413,13 @@ export default function Home() {
       <section className="workspace-section" aria-live="polite">
         {result?.media.length ? (
           <div className="workspace-tools">
+            <span className="workspace-label">{result.media.length} media</span>
             <button
               className="download-all-button"
               type="button"
-              onClick={() => downloadAllMedia(result.media)}
+              onClick={() => downloadAllMedia(result.media, result)}
               aria-label="Download all media"
+              title="Download all"
             >
               <DownloadSimple size={17} weight="bold" />
             </button>
@@ -372,19 +450,17 @@ function ResultState({
   onDownload,
 }: {
   result: ResolveResult;
-  onDownload: (media: MediaItem, index?: number) => void;
+  onDownload: (media: MediaItem, source: DownloadSource) => void;
 }) {
   return (
     <div className="result-state">
-      <div className="media-grid" aria-label={`${result.media.length} downloaded media items`}>
+      <div className="media-grid" aria-label={`${result.media.length} Instagram media items`}>
         {result.media.map((media, index) => (
           <article className="media-card" key={`${media.url}-${index}`}>
             <div className="media-frame">
               {media.type === "video" ? (
                 <video
-                  autoPlay
-                  muted
-                  loop
+                  controls
                   playsInline
                   preload="metadata"
                   poster={media.thumbnailUrl}
@@ -400,19 +476,29 @@ function ResultState({
                   draggable={false}
                 />
               )}
-              {media.type === "video" ? (
-                <span className="media-play" aria-hidden="true">
-                  <Play size={14} weight="fill" />
-                </span>
-              ) : null}
-              <button
-                className="media-download"
-                type="button"
-                onClick={() => onDownload(media, index)}
-                aria-label={`Download ${media.type} ${index + 1}`}
-              >
-                <DownloadSimple size={17} weight="bold" />
-              </button>
+              <div className="media-actions">
+                {media.type === "video" ? (
+                  <a
+                    className="media-player"
+                    href={media.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label="Open video in HTML5 player"
+                    title="Open HTML5 player"
+                  >
+                    <Play size={16} weight="fill" />
+                  </a>
+                ) : null}
+                <button
+                  className="media-download"
+                  type="button"
+                  onClick={() => onDownload(media, result)}
+                  aria-label={`Download ${media.type} ${index + 1}`}
+                  title={`Download ${media.type}`}
+                >
+                  <DownloadSimple size={17} weight="bold" />
+                </button>
+              </div>
             </div>
           </article>
         ))}
@@ -432,6 +518,7 @@ function EmbedOnlyState({ result }: { result: ResolveResult }) {
           target="_blank"
           rel="noreferrer"
           aria-label="Open original Instagram page"
+          title="Open Instagram"
         >
           <ArrowUpRight size={17} weight="bold" />
         </a>
