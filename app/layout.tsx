@@ -2,9 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "downflow. Save public Instagram media.",
-  description:
-    "A focused tool for saving media exposed by public Instagram links.",
+  title: "insta download",
+  description: "A minimal downloader for public Instagram media.",
 };
 
 export default function RootLayout({

@@ -2,12 +2,9 @@
 
 import {
   ArrowUpRight,
-  ClipboardText,
   DownloadSimple,
-  ImageSquare,
   LinkSimple,
   Play,
-  Sparkle,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -125,8 +122,6 @@ export default function Home() {
   const [result, setResult] = useState<ResolveResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [downloadMessage, setDownloadMessage] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [clipboardAvailable, setClipboardAvailable] = useState(true);
   const autoDownloadRef = useRef("");
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
@@ -156,10 +151,10 @@ export default function Home() {
         anchor.click();
         anchor.remove();
         window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-        setDownloadMessage("Download started. Check your browser downloads.");
+        setDownloadMessage("Download started.");
       } catch {
         window.open(media.url, "_blank", "noopener,noreferrer");
-        setDownloadMessage("Opened the media source. Use your browser's save action if needed.");
+        setDownloadMessage("The media source was opened.");
       }
     },
     [],
@@ -171,11 +166,7 @@ export default function Home() {
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
 
-      setDownloadMessage(
-        media.length === 1
-          ? "Starting your individual download."
-          : `Starting ${media.length} individual downloads. If asked, allow multiple downloads.`,
-      );
+      setDownloadMessage("Downloads starting.");
 
       const downloadNext = async (index: number) => {
         if (downloadSequenceRef.current !== sequence || !media[index]) return;
@@ -184,11 +175,7 @@ export default function Home() {
         if (downloadSequenceRef.current !== sequence) return;
 
         if (index === media.length - 1) {
-          setDownloadMessage(
-            media.length === 1
-              ? "Download started. Check your browser downloads."
-              : `${media.length} individual downloads started. Check your browser downloads.`,
-          );
+          setDownloadMessage("Downloads complete.");
           return;
         }
 
@@ -265,24 +252,6 @@ export default function Home() {
     void resolveUrl(url, true);
   };
 
-  const handlePaste = async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      setUrl(text);
-      void resolveUrl(text, true);
-      setClipboardAvailable(true);
-    } catch {
-      setClipboardAvailable(false);
-    }
-  };
-
-  const handleCopyLink = async () => {
-    if (!result) return;
-    await navigator.clipboard.writeText(result.canonicalUrl);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
-  };
-
   const downloadAllMedia = useCallback(
     (media: MediaItem[]) => {
       queueImmediateDownloads(media);
@@ -308,48 +277,19 @@ export default function Home() {
   return (
     <main className="site-frame">
       <nav className="topbar" aria-label="Primary">
-        <a className="brand" href="#top" aria-label="downflow home">
-          <span className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-          </span>
-          downflow<span className="brand-period">.</span>
+        <a className="brand" href="#top" aria-label="insta download home">
+          insta download
         </a>
-        <div className="topbar-note">
-          <span className="live-mark" aria-hidden="true" />
-          public links only
-        </div>
       </nav>
 
       <section className="hero-grid" id="top">
-        <div className="hero-copy">
-          <p className="eyebrow">Instagram media, simplified</p>
-          <h1>
-            Grab the post.
-            <span>Keep the moment.</span>
-          </h1>
-          <p className="hero-description">
-            Paste a public Instagram post, reel, video, or story link. Downflow finds the media exposed by Instagram&apos;s public page.
-          </p>
-          <div className="trust-row" aria-label="Product details">
-            <span>No account</span>
-            <span>No upload</span>
-            <span>Local download</span>
-          </div>
-        </div>
-
         <div className="tool-stack">
           <form className="input-card" onSubmit={handleSubmit}>
-            <div className="input-card-topline">
-              <label htmlFor="instagram-url">Paste a link to get started</label>
-              {url ? (
-                <button className="icon-button" type="button" onClick={clearAll} aria-label="Clear link">
-                  <X size={17} weight="bold" />
-                </button>
-              ) : null}
-            </div>
+            <label className="sr-only" htmlFor="instagram-url">
+              Instagram link
+            </label>
             <div className={`url-field ${viewState === "error" ? "has-error" : ""}`}>
-              <LinkSimple size={19} weight="regular" aria-hidden="true" />
+              <LinkSimple className="field-icon" size={19} weight="regular" aria-hidden="true" />
               <input
                 id="instagram-url"
                 ref={inputRef}
@@ -362,103 +302,67 @@ export default function Home() {
                   setViewState("idle");
                   queueLookup(nextValue);
                 }}
-                placeholder="https://www.instagram.com/p/..."
                 autoComplete="url"
                 spellCheck={false}
                 aria-invalid={viewState === "error"}
               />
-              <button className="paste-button" type="button" onClick={handlePaste}>
-                <ClipboardText size={17} weight="regular" />
-                Paste
+              {url ? (
+                <button className="clear-button" type="button" onClick={clearAll} aria-label="Clear link">
+                  <X size={17} weight="bold" />
+                </button>
+              ) : null}
+              <button
+                className="submit-button"
+                type="submit"
+                disabled={viewState === "loading"}
+                aria-label={viewState === "loading" ? "Loading" : "Download media"}
+              >
+                {viewState === "loading" ? (
+                  <span className="button-spinner" aria-hidden="true" />
+                ) : (
+                  <ArrowUpRight size={18} weight="bold" />
+                )}
               </button>
             </div>
-            <div className="input-card-footer">
-              <span className="input-hint">Public post, reel, video, or story URL</span>
-              <button className="find-button" type="submit" disabled={viewState === "loading"}>
-                {viewState === "loading" ? "Reading" : "Find media"}
-                <ArrowUpRight size={17} weight="bold" />
-              </button>
-            </div>
-            {!clipboardAvailable ? (
-              <p className="inline-note">Clipboard access is off. Paste directly into the field instead.</p>
-            ) : null}
             {viewState === "error" ? (
-              <p className="error-note" role="alert">
-                <WarningCircle size={16} weight="fill" />
-                {errorMessage}
-              </p>
+              <span className="error-state" role="alert">
+                <WarningCircle size={15} weight="fill" aria-hidden="true" />
+                <span className="sr-only">{errorMessage}</span>
+              </span>
             ) : null}
           </form>
-
-          <div className="small-panel">
-            <div className="small-panel-icon" aria-hidden="true">
-              <Sparkle size={18} weight="fill" />
-            </div>
-            <div>
-              <strong>Fast by design</strong>
-              <p>We only request the public page you give us.</p>
-            </div>
-          </div>
         </div>
       </section>
 
       <section className="workspace-section" aria-live="polite">
-        <div className="workspace-heading">
-          <div>
-            <p className="section-kicker">Your download space</p>
-            <h2>{viewState === "idle" ? "Nothing here yet." : viewState === "loading" ? "Looking for media." : "Your media is ready."}</h2>
-          </div>
-          {result?.media.length ? (
-            <button className="quiet-button" type="button" onClick={() => downloadAllMedia(result.media)}>
+        {result?.media.length ? (
+          <div className="workspace-tools">
+            <button
+              className="download-all-button"
+              type="button"
+              onClick={() => downloadAllMedia(result.media)}
+              aria-label="Download all media"
+            >
               <DownloadSimple size={17} weight="bold" />
-              Download all
             </button>
-          ) : null}
-        </div>
-
-        {viewState === "idle" ? <EmptyState /> : null}
-        {viewState === "loading" ? <LoadingState /> : null}
-        {viewState === "success" && result ? (
-          <ResultState result={result} onDownload={downloadMedia} onCopy={handleCopyLink} copied={copied} />
+          </div>
         ) : null}
+
+        {viewState === "loading" ? <LoadingState /> : null}
+        {viewState === "success" && result ? <ResultState result={result} onDownload={downloadMedia} /> : null}
         {viewState === "embed-only" && result ? <EmbedOnlyState result={result} /> : null}
-        {downloadMessage ? <p className="download-note">{downloadMessage}</p> : null}
+        {downloadMessage ? <p className="sr-only" role="status">{downloadMessage}</p> : null}
       </section>
-
-      <footer className="footer-note">
-        <span>Save what you have permission to use.</span>
-        <span>downflow is not affiliated with Instagram.</span>
-      </footer>
     </main>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="empty-state">
-      <div className="empty-visual" aria-hidden="true">
-        <div className="empty-card empty-card-back" />
-        <div className="empty-card empty-card-front">
-          <ImageSquare size={32} weight="regular" />
-        </div>
-      </div>
-      <div>
-        <h3>Drop in a public link.</h3>
-        <p>The preview and download actions will appear here as soon as the page responds.</p>
-      </div>
-    </div>
   );
 }
 
 function LoadingState() {
   return (
     <div className="loading-state" aria-label="Loading media preview">
-      <div className="skeleton skeleton-media" />
-      <div className="skeleton-copy">
-        <div className="skeleton skeleton-title" />
-        <div className="skeleton skeleton-line" />
-        <div className="skeleton skeleton-line short" />
-      </div>
+      <span className="loading-dot" />
+      <span className="loading-dot" />
+      <span className="loading-dot" />
     </div>
   );
 }
@@ -466,58 +370,53 @@ function LoadingState() {
 function ResultState({
   result,
   onDownload,
-  onCopy,
-  copied,
 }: {
   result: ResolveResult;
   onDownload: (media: MediaItem, index?: number) => void;
-  onCopy: () => void;
-  copied: boolean;
 }) {
   return (
     <div className="result-state">
-      <div className="result-meta">
-        <div className="source-preview">
-          <span className="source-icon" aria-hidden="true">
-            <Play size={15} weight="fill" />
-          </span>
-          <div>
-            <strong>{result.media.length} {result.media.length === 1 ? "file" : "files"} found</strong>
-            <span>{labelForKind(result.kind)} from a public page</span>
-          </div>
-        </div>
-        <button className="quiet-button" type="button" onClick={onCopy}>
-          <LinkSimple size={16} weight="bold" />
-          {copied ? "Copied" : "Copy link"}
-        </button>
-      </div>
-
-      <div className="media-grid">
+      <div className="media-grid" aria-label={`${result.media.length} downloaded media items`}>
         {result.media.map((media, index) => (
           <article className="media-card" key={`${media.url}-${index}`}>
             <div className="media-frame">
               {media.type === "video" ? (
-                <video controls preload="metadata" poster={media.thumbnailUrl} src={media.url} />
+                <video
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                  preload="metadata"
+                  poster={media.thumbnailUrl}
+                  src={media.url}
+                  aria-label={`${labelForKind(result.kind)} video ${index + 1}`}
+                />
               ) : (
-                <img src={media.url} alt={`${labelForKind(result.kind)} media ${index + 1}`} />
+                <img
+                  src={media.url}
+                  alt={`${labelForKind(result.kind)} image ${index + 1}`}
+                  loading={index === 0 ? "eager" : "lazy"}
+                  decoding="async"
+                  draggable={false}
+                />
               )}
-              <span className="media-type">
-                {media.type === "video" ? <Play size={13} weight="fill" /> : <ImageSquare size={13} weight="regular" />}
-                {media.type}
-              </span>
-            </div>
-            <div className="media-card-footer">
-              <span>{media.type === "video" ? "Video file" : "Image file"}</span>
-              <button type="button" onClick={() => onDownload(media, index)}>
-                <DownloadSimple size={16} weight="bold" />
-                Save
+              {media.type === "video" ? (
+                <span className="media-play" aria-hidden="true">
+                  <Play size={14} weight="fill" />
+                </span>
+              ) : null}
+              <button
+                className="media-download"
+                type="button"
+                onClick={() => onDownload(media, index)}
+                aria-label={`Download ${media.type} ${index + 1}`}
+              >
+                <DownloadSimple size={17} weight="bold" />
               </button>
             </div>
           </article>
         ))}
       </div>
-
-      <p className="result-caption">{result.caption || result.title || "Media exposed by the public Instagram page."}</p>
     </div>
   );
 }
@@ -525,21 +424,17 @@ function ResultState({
 function EmbedOnlyState({ result }: { result: ResolveResult }) {
   return (
     <div className="embed-state">
-      <div className="embed-copy">
-        <div className="embed-heading">
-          <WarningCircle size={20} weight="fill" />
-          <div>
-            <h3>Instagram kept the file behind its embed.</h3>
-            <p>{result.message}</p>
-          </div>
-        </div>
-        <a className="external-link" href={result.canonicalUrl} target="_blank" rel="noreferrer">
-          Open the original on Instagram
-          <ArrowUpRight size={16} weight="bold" />
-        </a>
-      </div>
       <div className="embed-preview">
         <iframe src={result.embedUrl} title="Instagram public embed preview" loading="lazy" />
+        <a
+          className="external-link"
+          href={result.canonicalUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Open original Instagram page"
+        >
+          <ArrowUpRight size={17} weight="bold" />
+        </a>
       </div>
     </div>
   );
