@@ -390,6 +390,15 @@ export async function POST(request: Request) {
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
 
+    if (new URL(request.url).searchParams.get("debug") === "1") {
+      return NextResponse.json({
+        htmlLengths: htmlChunks.map((chunk) => chunk.length),
+        hasShortcode: html.includes(sourceUrl.pathname.split("/").filter(Boolean).pop() ?? ""),
+        carouselMarkerCount: (html.match(/carousel_media/g) ?? []).length,
+        mediaCount: media.length,
+      });
+    }
+
     if (!media.length) {
       return NextResponse.json({
         ok: true,
