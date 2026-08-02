@@ -387,13 +387,13 @@ function getSourceIdentity(value: string, fallbackUsername?: string, fallbackId?
       ["p", "reel", "tv", "stories"].includes(segment),
     );
     const marker = segments[markerIndex];
-    const username =
-      fallbackUsername ??
-      (marker === "stories"
+    const pathUsername =
+      marker === "stories"
         ? segments[markerIndex + 1]
         : markerIndex > 0
           ? segments[markerIndex - 1]
-          : "instagram");
+          : undefined;
+    const username = pathUsername ?? fallbackUsername ?? "instagram";
     const postId =
       fallbackId ?? segments[markerIndex + 1] ?? segments[segments.length - 1] ?? "media";
 
