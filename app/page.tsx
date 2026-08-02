@@ -6,6 +6,8 @@ import {
   ClipboardText,
   DownloadSimple,
   LinkSimple,
+  SpeakerHigh,
+  SpeakerSlash,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -599,6 +601,86 @@ function DownloadProgressBar({ progress }: { progress: DownloadProgressState }) 
   );
 }
 
+function VideoPlayer({ media, label }: { media: MediaItem; label: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [muted, setMuted] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  const togglePlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (video.paused) {
+      void video.play().catch(() => undefined);
+    } else {
+      video.pause();
+    }
+  };
+
+  const toggleMute = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setMuted(video.muted);
+  };
+
+  const progress = duration ? Math.min((currentTime / duration) * 100, 100) : 0;
+
+  return (
+    <div className="cosmos-video-shell">
+      <video
+        ref={videoRef}
+        autoPlay
+        loop
+        muted={muted}
+        playsInline
+        preload="metadata"
+        poster={media.thumbnailUrl}
+        src={media.url}
+        aria-label={label}
+        onClick={togglePlayback}
+        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+        onVolumeChange={(event) => setMuted(event.currentTarget.muted)}
+      />
+      <div className="cosmos-video-gradient" aria-hidden="true" />
+      <button
+        className="cosmos-mute-button"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          toggleMute();
+        }}
+        aria-label={muted ? "Unmute" : "Mute"}
+        title={muted ? "Unmute" : "Mute"}
+      >
+        {muted ? <SpeakerSlash size={17} weight="regular" /> : <SpeakerHigh size={17} weight="regular" />}
+      </button>
+      <div className="cosmos-video-progress">
+        <div className="cosmos-video-track">
+          <span className="cosmos-video-fill" style={{ width: `${progress}%` }} />
+          <input
+            className="cosmos-video-range"
+            type="range"
+            min="0"
+            max={duration || 0}
+            step="0.1"
+            value={Math.min(currentTime, duration || 0)}
+            onChange={(event) => {
+              const nextTime = Number(event.target.value);
+              if (videoRef.current) videoRef.current.currentTime = nextTime;
+              setCurrentTime(nextTime);
+            }}
+            aria-label="Video progress"
+            disabled={!duration}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ResultState({
   result,
   onDownload,
@@ -616,13 +698,9 @@ function ResultState({
           <article className="media-card" key={`${media.url}-${index}`}>
             <div className="media-frame">
               {media.type === "video" ? (
-                <video
-                  controls
-                  playsInline
-                  preload="metadata"
-                  poster={media.thumbnailUrl}
-                  src={media.url}
-                  aria-label={`${labelForKind(result.kind)} video ${index + 1}`}
+                <VideoPlayer
+                  media={media}
+                  label={`${labelForKind(result.kind)} video ${index + 1}`}
                 />
               ) : (
                 <img
@@ -633,7 +711,7 @@ function ResultState({
                   draggable={false}
                 />
               )}
-              <div className="media-actions">
+              <div className={`media-actions ${media.type === "video" ? "video-actions" : ""}`}>
                 {media.type === "video" ? (
                   <a
                     className="media-player"
