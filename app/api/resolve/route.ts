@@ -391,11 +391,32 @@ export async function POST(request: Request) {
     const discoveredCanonical = extractCanonical(html);
 
     if (new URL(request.url).searchParams.get("debug") === "1") {
+      const debugTargets: Record<string, unknown>[] = [];
+      let debugScriptCount = 0;
+      let debugParsedScriptCount = 0;
+      let debugParseError = "";
+      const debugScriptMatches = html.matchAll(
+        /<script\b[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi,
+      );
+      for (const match of debugScriptMatches) {
+        debugScriptCount += 1;
+        try {
+          extractTargetObjects(JSON.parse(match[1]), sourceUrl.pathname.split("/").filter(Boolean).pop() ?? "", debugTargets);
+          debugParsedScriptCount += 1;
+        } catch (error) {
+          debugParseError ||= error instanceof Error ? error.message : "unknown parse error";
+        }
+      }
+
       return NextResponse.json({
         htmlLengths: htmlChunks.map((chunk) => chunk.length),
         hasShortcode: html.includes(sourceUrl.pathname.split("/").filter(Boolean).pop() ?? ""),
         carouselMarkerCount: (html.match(/carousel_media/g) ?? []).length,
         mediaCount: media.length,
+        scriptCount: debugScriptCount,
+        parsedScriptCount: debugParsedScriptCount,
+        targetObjectCount: debugTargets.length,
+        parseError: debugParseError,
       });
     }
 
