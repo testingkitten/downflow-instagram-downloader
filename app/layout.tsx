@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
-import "@fontsource/ia-writer-quattro";
+import "@fontsource/instrument-serif/400.css";
+import "@fontsource/manrope/400.css";
+import "@fontsource/manrope/500.css";
+import "@fontsource/manrope/600.css";
+import "@fontsource/manrope/700.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

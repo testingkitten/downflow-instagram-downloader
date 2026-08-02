@@ -468,23 +468,14 @@ export default function Home() {
   return (
     <main className="site-frame">
       <nav className="topbar" aria-label="Primary">
-        <span className="brand-rule" aria-hidden="true" />
         <a className="brand" href="#top" aria-label="Instagram Downloader home">
-          Instagram Downloader
+          <span className="brand-label">Instagram Downloader</span>
         </a>
-        <span className="brand-rule" aria-hidden="true" />
       </nav>
 
       <section className="hero-grid" id="top">
         <div className="tool-stack">
           <div className="paste-zone">
-            <div className="paste-zone-head">
-              <span>PASTE / DOWNLOAD</span>
-              <span>CTRL / CMD + V</span>
-            </div>
-            <div className="paste-zone-mark" aria-hidden="true">
-              <ClipboardText size={25} weight="regular" />
-            </div>
             <form className="input-card" onSubmit={handleSubmit}>
               <label className="sr-only" htmlFor="instagram-url">
                 Instagram link
@@ -518,9 +509,10 @@ export default function Home() {
                   type="button"
                   onClick={handlePaste}
                   disabled={pasteState === "pasting" || viewState === "loading"}
+                  aria-label={pasteState === "pasting" ? "Pasting link" : "Paste link"}
+                  title={pasteState === "pasting" ? "Pasting link" : "Paste link"}
                 >
                   <ClipboardText size={17} weight="regular" aria-hidden="true" />
-                  {pasteState === "pasting" ? "Pasting" : "Paste Link"}
                 </button>
               </div>
               {viewState === "error" ? (
@@ -534,7 +526,10 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="workspace-section" aria-live="polite">
+      <section
+        className={`workspace-section ${viewState === "idle" ? "is-empty" : ""}`}
+        aria-live="polite"
+      >
         {downloadProgress ? <DownloadProgressBar progress={downloadProgress} /> : null}
         {result?.media.length ? (
           <div className="workspace-tools">
