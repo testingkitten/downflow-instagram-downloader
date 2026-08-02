@@ -12,7 +12,13 @@ const REQUEST_HEADERS = {
     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
   "User-Agent":
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.91 Safari/537.36",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Upgrade-Insecure-Requests": "1",
+  "X-IG-App-ID": "936619743392459",
+  "X-IG-D": "www",
 };
 
 const UPSTREAM_TIMEOUT_MS = 6500;
@@ -92,7 +98,7 @@ function isPostMediaUrl(value: string) {
     return (
       isMediaUrl(value) &&
       (host.startsWith("scontent.") || host.endsWith(".fbcdn.net")) &&
-      /\/v\/t51\./i.test(url.pathname)
+      /\/v\/t51\.[^/]+-15\//i.test(url.pathname)
     );
   } catch {
     return false;
@@ -105,16 +111,86 @@ function inferMediaType(url: string, fallback: MediaItem["type"] = "image") {
     : fallback;
 }
 
-function extractMedia(html: string) {
+function collectMedia(
+  value: unknown,
+  media: MediaItem[],
+  seen: Set<string>,
+  fallbackType: MediaItem["type"] = "image",
+  skipBranches = false,
+) {
+  if (typeof value === "string") {
+    const url = cleanValue(value);
+    const key = mediaKey(url);
+    if (!isPostMediaUrl(url) || seen.has(key)) return;
+
+    seen.add(key);
+    media.push({ type: inferMediaType(url, fallbackType), url });
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectMedia(item, media, seen, fallbackType, skipBranches);
+    return;
+  }
+
+  if (!value || typeof value !== "object") return;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (
+      skipBranches &&
+      [
+        "comments",
+        "comments_connection",
+        "coauthor_producers",
+        "polaris_ordered_timeline_connection",
+        "related_topic_pills",
+        "user",
+      ].includes(key)
+    ) {
+      continue;
+    }
+
+    const childType = /video|playable/i.test(key) ? "video" : fallbackType;
+    if (typeof child === "string") {
+      if (/url|uri|src|candidate/i.test(key)) {
+        collectMedia(child, media, seen, childType);
+      }
+      continue;
+    }
+
+    collectMedia(child, media, seen, childType, skipBranches);
+    if (media.length >= MAX_CAROUSEL_ITEMS) return;
+  }
+}
+
+function extractTargetObjects(value: unknown, shortcode: string, matches: Record<string, unknown>[]) {
+  if (Array.isArray(value)) {
+    for (const item of value) extractTargetObjects(item, shortcode, matches);
+    return;
+  }
+
+  if (!value || typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  if (record.code === shortcode) matches.push(record);
+
+  for (const child of Object.values(record)) {
+    extractTargetObjects(child, shortcode, matches);
+    if (matches.length >= 8) return;
+  }
+}
+
+function extractMedia(html: string, shortcode?: string) {
   const media: MediaItem[] = [];
   const seen = new Set<string>();
 
   const add = (rawUrl: string | undefined, fallbackType: MediaItem["type"]) => {
     if (!rawUrl) return;
     const url = cleanValue(rawUrl);
-    if (!isMediaUrl(url) || seen.has(url)) return;
+    const key = mediaKey(url);
+    if (!isMediaUrl(url) || seen.has(key)) return;
 
-    seen.add(url);
+    seen.add(key);
     media.push({ type: inferMediaType(url, fallbackType), url });
   };
 
@@ -122,23 +198,46 @@ function extractMedia(html: string) {
   add(extractMeta(html, "og:video"), "video");
   add(extractMeta(html, "og:image"), "image");
 
-  const directMatches = html.matchAll(
-    /https?:\\?\/\\?\/[^"'\\\s<>]+?\.(?:jpe?g|png|webp|mp4)(?:\?[^"'\\\s<>]*)?/gi,
-  );
-  for (const match of directMatches) {
-    const url = cleanValue(match[0]);
-    if (isPostMediaUrl(url)) add(url, inferMediaType(url));
+  if (shortcode) {
+    const targetObjects: Record<string, unknown>[] = [];
+    const scriptMatches = html.matchAll(
+      /<script\b[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi,
+    );
+
+    for (const match of scriptMatches) {
+      try {
+        const payload = JSON.parse(match[1]);
+        extractTargetObjects(payload, shortcode, targetObjects);
+      } catch {
+        // Some Instagram bootstrap scripts are not standalone JSON documents.
+      }
+    }
+
+    for (const target of targetObjects) {
+      collectMedia(target, media, seen, "image", true);
+      if (media.length >= MAX_CAROUSEL_ITEMS) return media.slice(0, MAX_CAROUSEL_ITEMS);
+    }
   }
 
-  const videoMatches = html.matchAll(
-    /["'](?:video_url|playable_url|video_versions)["']\s*:\s*["']([^"']+)["']/gi,
-  );
-  for (const match of videoMatches) add(match[1], "video");
+  if (!shortcode || !media.length) {
+    const directMatches = html.matchAll(
+      /https?:\\?\/\\?\/[^"'\\\s<>]+?\.(?:jpe?g|png|webp|mp4)(?:\?[^"'\\\s<>]*)?/gi,
+    );
+    for (const match of directMatches) {
+      const url = cleanValue(match[0]);
+      if (isPostMediaUrl(url)) add(url, inferMediaType(url));
+    }
 
-  const displayMatches = html.matchAll(
-    /["']display_url["']\s*:\s*["']([^"']+)["']/gi,
-  );
-  for (const match of displayMatches) add(match[1], "image");
+    const videoMatches = html.matchAll(
+      /["'](?:video_url|playable_url|video_versions)["']\s*:\s*["']([^"']+)["']/gi,
+    );
+    for (const match of videoMatches) add(match[1], "video");
+
+    const displayMatches = html.matchAll(
+      /["'](?:display_url|display_uri)["']\s*:\s*["']([^"']+)["']/gi,
+    );
+    for (const match of displayMatches) add(match[1], "image");
+  }
 
   return media;
 }
@@ -153,13 +252,27 @@ function getPostKind(pathname: string) {
 }
 
 function getEmbedUrl(url: URL) {
-  const path = url.pathname.replace(/\/$/, "");
+  const path = getPostPath(url).replace(/\/$/, "");
   return `https://www.instagram.com${path}/embed/captioned/`;
 }
 
 function getMediaEndpointUrl(url: URL, index: number) {
-  const path = url.pathname.replace(/\/$/, "");
+  const path = getPostPath(url).replace(/\/$/, "");
   return `https://www.instagram.com${path}/media/?size=l&img_index=${index}`;
+}
+
+function getPostPath(url: URL) {
+  const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  const markerIndex = segments.findIndex((segment) =>
+    ["p", "reel", "tv", "stories"].includes(segment),
+  );
+
+  if (markerIndex >= 0 && segments[markerIndex + 1]) {
+    const length = segments[markerIndex] === "stories" ? 3 : 2;
+    return `/${segments.slice(markerIndex, markerIndex + length).join("/")}`;
+  }
+
+  return `/${segments.join("/")}`;
 }
 
 function mediaKey(value: string) {
@@ -237,11 +350,8 @@ async function fetchMediaEndpoint(target: string): Promise<MediaItem | undefined
 async function fetchCarouselMedia(url: URL) {
   if (getPostKind(url.pathname) === "story") return [];
 
-  const targets = Array.from({ length: MAX_CAROUSEL_ITEMS }, (_, index) =>
-    getMediaEndpointUrl(url, index),
-  );
-  const results = await Promise.all(targets.map(fetchMediaEndpoint));
-  return mergeMedia(results.filter((item): item is MediaItem => Boolean(item)));
+  const firstMedia = await fetchMediaEndpoint(getMediaEndpointUrl(url, 0));
+  return firstMedia ? [firstMedia] : [];
 }
 
 export async function POST(request: Request) {
@@ -260,7 +370,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const canonicalUrl = `https://www.instagram.com${sourceUrl.pathname}`;
+    const canonicalUrl = `https://www.instagram.com${getPostPath(sourceUrl)}`;
     const embedUrl = getEmbedUrl(sourceUrl);
     const fetchTargets = [canonicalUrl, embedUrl];
     const [htmlChunks, endpointMedia] = await Promise.all([
@@ -268,7 +378,7 @@ export async function POST(request: Request) {
       fetchCarouselMedia(sourceUrl),
     ]);
     const html = htmlChunks.join("\n");
-    const media = mergeMedia(endpointMedia, extractMedia(html));
+    const media = mergeMedia(endpointMedia, extractMedia(html, sourceUrl.pathname.split("/").filter(Boolean).pop()));
     const caption = extractMeta(html, "og:description");
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
