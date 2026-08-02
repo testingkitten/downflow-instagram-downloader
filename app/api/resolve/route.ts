@@ -30,11 +30,15 @@ type MediaItem = {
   thumbnailUrl?: string;
 };
 
+function decodeEscapedUnicode(value: string) {
+  return value.replace(/\\u([0-9a-f]{4})/gi, (_, code: string) =>
+    String.fromCharCode(Number.parseInt(code, 16)),
+  );
+}
+
 function cleanValue(value: string) {
-  return value
-    .replace(/\\u0026/g, "&")
-    .replace(/\\u003D/gi, "=")
-    .replace(/\\u002F/gi, "/")
+  return decodeEscapedUnicode(value)
+    .replace(/\\(["'])/g, "$1")
     .replace(/\\\//g, "/")
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
@@ -141,7 +145,9 @@ function mediaQualityScore(value: string) {
     ];
 
     if (!sizedCandidates.length && !oneDimensionalCandidates.length) {
-      return 10_000_000;
+      // Instagram's original rendition usually has no resize marker. Keep it
+      // ahead of transformed s640/s1080 variants when both are available.
+      return 1_000_000_000;
     }
 
     return Math.max(
@@ -197,6 +203,64 @@ function addMediaCandidate(
     url,
     ...(type === "video" && cleanThumbnail ? { thumbnailUrl: cleanThumbnail } : {}),
   });
+}
+
+function extractHighestQualityVideoUrls(html: string) {
+  const normalizedHtml = cleanValue(html);
+  const matches = normalizedHtml.matchAll(
+    /FBQualityLabel\s*=\s*["']?(\d+)p["']?[\s\S]{0,1800}?<BaseURL>\s*(https:\/\/[^<>"'\s]+?\.mp4[^<>"'\s]*)\s*<\/BaseURL>/gi,
+  );
+  const selectedUrls: string[] = [];
+  let currentUrl: string | undefined;
+  let currentQuality = 0;
+  let previousQuality = 0;
+
+  for (const match of matches) {
+    const quality = Number(match[1]);
+    const url = cleanValue(match[2]);
+    if (!isPostMediaUrl(url)) continue;
+
+    // Instagram lists one video's representations in ascending quality. A
+    // quality reset marks the next carousel item, so retain only its largest
+    // representation instead of exposing every low-resolution variant.
+    if (currentUrl && quality <= previousQuality) {
+      selectedUrls.push(currentUrl);
+      currentUrl = undefined;
+      currentQuality = 0;
+    }
+
+    if (!currentUrl || quality >= currentQuality) {
+      currentUrl = url;
+      currentQuality = quality;
+    }
+    previousQuality = quality;
+  }
+
+  if (currentUrl) selectedUrls.push(currentUrl);
+  return selectedUrls.slice(0, MAX_CAROUSEL_ITEMS);
+}
+
+function isVideoCoverUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const query = decodeURIComponent(url.search);
+    if (/video[_-]?default[_-]?cover[_-]?frame|video[_-]?cover[_-]?frame/i.test(query)) {
+      return true;
+    }
+
+    const encodedMetadata = url.searchParams.get("efg");
+    if (encodedMetadata && typeof atob === "function") {
+      const padded = encodedMetadata.replace(/-/g, "+").replace(/_/g, "/");
+      const decodedMetadata = atob(padded.padEnd(Math.ceil(padded.length / 4) * 4, "="));
+      return /video[_-]?default[_-]?cover[_-]?frame|video[_-]?cover[_-]?frame/i.test(
+        decodedMetadata,
+      );
+    }
+  } catch {
+    return /video[_-]?default[_-]?cover[_-]?frame|video[_-]?cover[_-]?frame/i.test(value);
+  }
+
+  return false;
 }
 
 function collectMedia(
@@ -291,7 +355,9 @@ function removeVideoThumbnails(media: MediaItem[]) {
   );
 
   return media.filter(
-    (item) => item.type === "video" || !thumbnailKeys.has(mediaKey(item.url)),
+    (item) =>
+      item.type === "video" ||
+      (!thumbnailKeys.has(mediaKey(item.url)) && !isVideoCoverUrl(item.url)),
   );
 }
 
@@ -325,9 +391,20 @@ function extractMedia(html: string, shortcode?: string) {
 
     for (const target of targetObjects) {
       collectMedia(target, media, seen, "image", true);
-      if (media.length >= MAX_CAROUSEL_ITEMS) return media.slice(0, MAX_CAROUSEL_ITEMS);
+      if (media.length >= MAX_CAROUSEL_ITEMS) break;
     }
   }
+
+  const highestQualityVideoUrls = extractHighestQualityVideoUrls(html);
+  if (highestQualityVideoUrls.length) {
+    const selectedVideoUrls = new Set(highestQualityVideoUrls);
+    for (let index = media.length - 1; index >= 0; index -= 1) {
+      if (media[index].type === "video" && !selectedVideoUrls.has(media[index].url)) {
+        media.splice(index, 1);
+      }
+    }
+  }
+  for (const url of highestQualityVideoUrls) add(url, "video");
 
   const restrictFallback = media.length > 0;
   const knownMediaKeys = new Set(media.map((item) => mediaKey(item.url)));
@@ -350,13 +427,16 @@ function extractMedia(html: string, shortcode?: string) {
     );
     for (const match of directMatches) {
       const url = cleanValue(match[0]);
+      if (highestQualityVideoUrls.length && inferMediaType(url) === "video") continue;
       if (isPostMediaUrl(url)) addFallback(url, inferMediaType(url));
     }
 
-    const videoMatches = html.matchAll(
-      /["'](?:video_url|playable_url|video_versions)["']\s*:\s*["']([^"']+)["']/gi,
-    );
-    for (const match of videoMatches) addFallback(match[1], "video");
+    if (!highestQualityVideoUrls.length) {
+      const videoMatches = html.matchAll(
+        /["'](?:video_url|playable_url|video_versions)["']\s*:\s*["']([^"']+)["']/gi,
+      );
+      for (const match of videoMatches) addFallback(match[1], "video");
+    }
 
     const displayMatches = html.matchAll(
       /["'](?:display_url|display_uri)["']\s*:\s*["']([^"']+)["']/gi,
@@ -364,7 +444,7 @@ function extractMedia(html: string, shortcode?: string) {
     for (const match of displayMatches) addFallback(match[1], "image");
   }
 
-  return removeVideoThumbnails(media);
+  return removeVideoThumbnails(media).slice(0, MAX_CAROUSEL_ITEMS);
 }
 
 function getPostKind(pathname: string) {
