@@ -256,6 +256,12 @@ function getEmbedUrl(url: URL) {
   return `https://www.instagram.com${path}/embed/captioned/`;
 }
 
+function getPageFetchUrl(url: URL) {
+  const pageUrl = new URL(`https://www.instagram.com${getPostPath(url)}`);
+  pageUrl.searchParams.set("hl", url.searchParams.get("hl") ?? "en");
+  return pageUrl.toString();
+}
+
 function getMediaEndpointUrl(url: URL, index: number) {
   const path = getPostPath(url).replace(/\/$/, "");
   return `https://www.instagram.com${path}/media/?size=l&img_index=${index}`;
@@ -372,7 +378,7 @@ export async function POST(request: Request) {
 
     const canonicalUrl = `https://www.instagram.com${getPostPath(sourceUrl)}`;
     const embedUrl = getEmbedUrl(sourceUrl);
-    const fetchTargets = [canonicalUrl, embedUrl];
+    const fetchTargets = [getPageFetchUrl(sourceUrl), embedUrl];
     const [htmlChunks, endpointMedia] = await Promise.all([
       Promise.all(fetchTargets.map(fetchHtml)),
       fetchCarouselMedia(sourceUrl),
