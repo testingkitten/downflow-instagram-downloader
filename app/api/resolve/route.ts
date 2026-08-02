@@ -408,6 +408,10 @@ export async function POST(request: Request) {
         }
       }
 
+      const debugExtractedMedia: MediaItem[] = [];
+      const debugSeen = new Set<string>();
+      for (const target of debugTargets) collectMedia(target, debugExtractedMedia, debugSeen, "image", true);
+
       return NextResponse.json({
         htmlLengths: htmlChunks.map((chunk) => chunk.length),
         hasShortcode: html.includes(sourceUrl.pathname.split("/").filter(Boolean).pop() ?? ""),
@@ -416,6 +420,8 @@ export async function POST(request: Request) {
         scriptCount: debugScriptCount,
         parsedScriptCount: debugParsedScriptCount,
         targetObjectCount: debugTargets.length,
+        extractedMediaCount: debugExtractedMedia.length,
+        extractedMediaPaths: debugExtractedMedia.map((item) => mediaKey(item.url)),
         parseError: debugParseError,
       });
     }
