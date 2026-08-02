@@ -411,6 +411,24 @@ export async function POST(request: Request) {
       const debugExtractedMedia: MediaItem[] = [];
       const debugSeen = new Set<string>();
       for (const target of debugTargets) collectMedia(target, debugExtractedMedia, debugSeen, "image", true);
+      const debugUrlValues: Array<{ key: string; value: string; valid: boolean }> = [];
+      const collectDebugUrlValues = (value: unknown, key = "") => {
+        if (debugUrlValues.length >= 12) return;
+        if (typeof value === "string") {
+          if (/url|uri|src|candidate/i.test(key)) {
+            const cleaned = cleanValue(value);
+            debugUrlValues.push({ key, value: cleaned.slice(0, 220), valid: isPostMediaUrl(cleaned) });
+          }
+          return;
+        }
+        if (Array.isArray(value)) {
+          for (const item of value) collectDebugUrlValues(item, key);
+          return;
+        }
+        if (!value || typeof value !== "object") return;
+        for (const [childKey, child] of Object.entries(value)) collectDebugUrlValues(child, childKey);
+      };
+      for (const target of debugTargets) collectDebugUrlValues(target);
 
       return NextResponse.json({
         htmlLengths: htmlChunks.map((chunk) => chunk.length),
@@ -422,6 +440,7 @@ export async function POST(request: Request) {
         targetObjectCount: debugTargets.length,
         extractedMediaCount: debugExtractedMedia.length,
         extractedMediaPaths: debugExtractedMedia.map((item) => mediaKey(item.url)),
+        urlValues: debugUrlValues,
         parseError: debugParseError,
       });
     }
