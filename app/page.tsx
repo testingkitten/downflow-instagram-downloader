@@ -260,6 +260,7 @@ export default function Home() {
   const [pasteState, setPasteState] = useState<"idle" | "pasting">("idle");
   const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(false);
   const [autoDownloadPreferenceReady, setAutoDownloadPreferenceReady] = useState(false);
+  const [shareDownloadComplete, setShareDownloadComplete] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const lastLookupRef = useRef("");
@@ -371,7 +372,7 @@ export default function Home() {
   );
 
   const queueDownloads = useCallback(
-    (media: MediaItem[], source: DownloadSource) => {
+    (media: MediaItem[], source: DownloadSource, onComplete?: () => void) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
@@ -393,6 +394,7 @@ export default function Home() {
 
         if (index === media.length - 1) {
           setDownloadMessage("Downloads complete.");
+          onComplete?.();
           return;
         }
 
@@ -408,7 +410,7 @@ export default function Home() {
   );
 
   const resolveUrl = useCallback(
-    async (rawValue: string, force = false) => {
+    async (rawValue: string, force = false, fromShare = false) => {
       const normalized = normalizeInstagramUrl(rawValue);
       if (!normalized) {
         if (force) {
@@ -435,6 +437,7 @@ export default function Home() {
       setErrorMessage("");
       setDownloadMessage("");
       setDownloadProgress(null);
+      setShareDownloadComplete(false);
       setViewState("loading");
 
       try {
@@ -450,12 +453,26 @@ export default function Home() {
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
         if (
-          autoDownloadPreferenceReady &&
-          autoDownloadEnabled &&
           payload.status === "ready" &&
-          payload.media.length
+          payload.media.length &&
+          (fromShare || (autoDownloadPreferenceReady && autoDownloadEnabled))
         ) {
-          queueDownloads(payload.media, payload);
+          queueDownloads(
+            payload.media,
+            payload,
+            fromShare
+              ? () => {
+                  setShareDownloadComplete(true);
+                  window.setTimeout(() => {
+                    try {
+                      window.close();
+                    } catch {
+                      // Browsers may refuse to close a PWA window they did not open.
+                    }
+                  }, 350);
+                }
+              : undefined,
+          );
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -473,7 +490,7 @@ export default function Home() {
 
     sharedLookupRef.current = sharedUrl;
     window.history.replaceState(null, "", window.location.pathname);
-    void resolveUrl(sharedUrl, true);
+    void resolveUrl(sharedUrl, true, true);
   }, [autoDownloadPreferenceReady, resolveUrl]);
 
   const queueLookup = (value: string) => {
@@ -525,6 +542,7 @@ export default function Home() {
     setErrorMessage("");
     setDownloadMessage("");
     setDownloadProgress(null);
+    setShareDownloadComplete(false);
     setViewState("idle");
     inputRef.current?.focus();
   };
@@ -642,6 +660,11 @@ export default function Home() {
           <ResultState result={result} onDownload={downloadMedia} />
         ) : null}
         {viewState === "embed-only" && result ? <EmbedOnlyState result={result} /> : null}
+        {shareDownloadComplete ? (
+          <p className="share-complete-note" role="status">
+            Saved — return to Instagram.
+          </p>
+        ) : null}
         {downloadMessage ? <p className="sr-only" role="status">{downloadMessage}</p> : null}
       </section>
     </main>

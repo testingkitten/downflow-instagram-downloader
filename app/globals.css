@@ -457,6 +457,19 @@ a {
   animation: progress-sweep 1.25s ease-in-out infinite;
 }
 
+.share-complete-note {
+  width: fit-content;
+  margin: 8px auto 0;
+  padding: 8px 12px;
+  color: var(--color-stone);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  background: rgba(200, 216, 191, 0.32);
+  border: 1px solid rgba(48, 52, 47, 0.08);
+  border-radius: 999px;
+}
+
 .result-state {
   flex: 1 1 auto;
   min-height: 0;
