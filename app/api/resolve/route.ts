@@ -97,7 +97,7 @@ function isPostMediaUrl(value: string) {
     const host = url.hostname.toLowerCase();
     return (
       isMediaUrl(value) &&
-      (host.startsWith("scontent.") || host.endsWith(".fbcdn.net")) &&
+      (/^scontent(?:[.-])/i.test(host) || host.endsWith(".fbcdn.net")) &&
       /\/v\/t51\.[^/]+-15\//i.test(url.pathname)
     );
   } catch {
@@ -389,61 +389,6 @@ export async function POST(request: Request) {
     const caption = extractMeta(html, "og:description");
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
-
-    if (new URL(request.url).searchParams.get("debug") === "1") {
-      const debugTargets: Record<string, unknown>[] = [];
-      let debugScriptCount = 0;
-      let debugParsedScriptCount = 0;
-      let debugParseError = "";
-      const debugScriptMatches = html.matchAll(
-        /<script\b[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi,
-      );
-      for (const match of debugScriptMatches) {
-        debugScriptCount += 1;
-        try {
-          extractTargetObjects(JSON.parse(match[1]), sourceUrl.pathname.split("/").filter(Boolean).pop() ?? "", debugTargets);
-          debugParsedScriptCount += 1;
-        } catch (error) {
-          debugParseError ||= error instanceof Error ? error.message : "unknown parse error";
-        }
-      }
-
-      const debugExtractedMedia: MediaItem[] = [];
-      const debugSeen = new Set<string>();
-      for (const target of debugTargets) collectMedia(target, debugExtractedMedia, debugSeen, "image", true);
-      const debugUrlValues: Array<{ key: string; value: string; valid: boolean }> = [];
-      const collectDebugUrlValues = (value: unknown, key = "") => {
-        if (debugUrlValues.length >= 12) return;
-        if (typeof value === "string") {
-          if (/url|uri|src|candidate/i.test(key)) {
-            const cleaned = cleanValue(value);
-            debugUrlValues.push({ key, value: cleaned.slice(0, 220), valid: isPostMediaUrl(cleaned) });
-          }
-          return;
-        }
-        if (Array.isArray(value)) {
-          for (const item of value) collectDebugUrlValues(item, key);
-          return;
-        }
-        if (!value || typeof value !== "object") return;
-        for (const [childKey, child] of Object.entries(value)) collectDebugUrlValues(child, childKey);
-      };
-      for (const target of debugTargets) collectDebugUrlValues(target);
-
-      return NextResponse.json({
-        htmlLengths: htmlChunks.map((chunk) => chunk.length),
-        hasShortcode: html.includes(sourceUrl.pathname.split("/").filter(Boolean).pop() ?? ""),
-        carouselMarkerCount: (html.match(/carousel_media/g) ?? []).length,
-        mediaCount: media.length,
-        scriptCount: debugScriptCount,
-        parsedScriptCount: debugParsedScriptCount,
-        targetObjectCount: debugTargets.length,
-        extractedMediaCount: debugExtractedMedia.length,
-        extractedMediaPaths: debugExtractedMedia.map((item) => mediaKey(item.url)),
-        urlValues: debugUrlValues,
-        parseError: debugParseError,
-      });
-    }
 
     if (!media.length) {
       return NextResponse.json({
