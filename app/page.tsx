@@ -51,6 +51,7 @@ const INSTAGRAM_HOSTS = new Set([
   "instagr.am",
   "www.instagr.am",
 ]);
+const AUTO_DOWNLOAD_STORAGE_KEY = "downflow:auto-download";
 
 function normalizeInstagramUrl(value: string) {
   try {
@@ -230,6 +231,7 @@ export default function Home() {
   const [downloadMessage, setDownloadMessage] = useState("");
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState | null>(null);
   const [pasteState, setPasteState] = useState<"idle" | "pasting">("idle");
+  const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const lastLookupRef = useRef("");
@@ -237,6 +239,14 @@ export default function Home() {
   const pendingDownloadsRef = useRef<number[]>([]);
   const downloadSequenceRef = useRef(0);
   const progressResetRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      setAutoDownloadEnabled(window.localStorage.getItem(AUTO_DOWNLOAD_STORAGE_KEY) === "true");
+    } catch {
+      setAutoDownloadEnabled(false);
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -403,13 +413,16 @@ export default function Home() {
 
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
+        if (autoDownloadEnabled && payload.status === "ready" && payload.media.length) {
+          queueDownloads(payload.media, payload);
+        }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setViewState("error");
         setErrorMessage(error instanceof Error ? error.message : "That link could not be read.");
       }
     },
-    [],
+    [autoDownloadEnabled, queueDownloads],
   );
 
   const queueLookup = (value: string) => {
@@ -465,12 +478,38 @@ export default function Home() {
     inputRef.current?.focus();
   };
 
+  const toggleAutoDownload = () => {
+    setAutoDownloadEnabled((previous) => {
+      const next = !previous;
+      try {
+        window.localStorage.setItem(AUTO_DOWNLOAD_STORAGE_KEY, String(next));
+      } catch {
+        // Keep the in-memory toggle usable when storage is blocked.
+      }
+      return next;
+    });
+  };
+
   return (
     <main className="site-frame">
       <nav className="topbar" aria-label="Primary">
         <a className="brand" href="#top" aria-label="Instagram Downloader home">
           <span className="brand-label">Instagram Downloader</span>
         </a>
+        <div className="auto-download-control">
+          <span className="auto-download-label">Auto</span>
+          <button
+            className={`auto-download-switch ${autoDownloadEnabled ? "is-on" : ""}`}
+            type="button"
+            role="switch"
+            aria-checked={autoDownloadEnabled}
+            aria-label="Auto-download"
+            title={autoDownloadEnabled ? "Auto-download on" : "Auto-download off"}
+            onClick={toggleAutoDownload}
+          >
+            <span className="auto-download-thumb" aria-hidden="true" />
+          </button>
+        </div>
       </nav>
 
       <section className="hero-grid" id="top">
@@ -742,10 +781,19 @@ function ResultState({
 }
 
 function EmbedOnlyState({ result }: { result: ResolveResult }) {
+  const isStory = result.kind === "story";
+
   return (
     <div className="embed-state">
-      <div className="embed-preview">
-        <iframe src={result.embedUrl} title="Instagram public embed preview" loading="lazy" />
+      <div className={`embed-preview ${isStory ? "is-story" : ""}`}>
+        {isStory ? (
+          <div className="embed-message" role="status">
+            <span className="embed-message-mark" aria-hidden="true" />
+            <p>{result.message ?? "No active public story is available."}</p>
+          </div>
+        ) : (
+          <iframe src={result.embedUrl} title="Instagram public embed preview" loading="lazy" />
+        )}
         <a
           className="external-link"
           href={result.canonicalUrl}
