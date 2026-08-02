@@ -111,20 +111,68 @@ function inferMediaType(url: string, fallback: MediaItem["type"] = "image") {
     : fallback;
 }
 
+function mediaQualityScore(value: string) {
+  try {
+    const url = new URL(value);
+    const source = `${url.pathname}${url.search}`;
+    const sizedCandidates = [
+      ...source.matchAll(/(?:^|[_=&])s(\d{2,5})x(\d{2,5})(?:_|&|$)/gi),
+    ];
+    const oneDimensionalCandidates = [
+      ...source.matchAll(/(?:^|[_=&])(?:w|h)(\d{2,5})(?:_|&|$)/gi),
+    ];
+
+    if (!sizedCandidates.length && !oneDimensionalCandidates.length) {
+      return 10_000_000;
+    }
+
+    return Math.max(
+      ...sizedCandidates.map((match) => {
+        const width = Number(match[1]);
+        const height = Number(match[2]);
+        return Math.max(width, height) * 1_000 + width * height;
+      }),
+      ...oneDimensionalCandidates.map((match) => Number(match[1]) * 1_000),
+    );
+  } catch {
+    return 0;
+  }
+}
+
+function addMediaCandidate(
+  rawValue: string,
+  media: MediaItem[],
+  seen: Map<string, number>,
+  fallbackType: MediaItem["type"],
+) {
+  const url = cleanValue(rawValue);
+  if (!isPostMediaUrl(url)) return;
+
+  const key = mediaKey(url);
+  const score = mediaQualityScore(url);
+  const existingScore = seen.get(key);
+  const existingIndex = media.findIndex((item) => mediaKey(item.url) === key);
+
+  if (existingIndex >= 0) {
+    if (existingScore !== undefined && score <= existingScore) return;
+    media[existingIndex] = { type: inferMediaType(url, fallbackType), url };
+    seen.set(key, score);
+    return;
+  }
+
+  seen.set(key, score);
+  media.push({ type: inferMediaType(url, fallbackType), url });
+}
+
 function collectMedia(
   value: unknown,
   media: MediaItem[],
-  seen: Set<string>,
+  seen: Map<string, number>,
   fallbackType: MediaItem["type"] = "image",
   skipBranches = false,
 ) {
   if (typeof value === "string") {
-    const url = cleanValue(value);
-    const key = mediaKey(url);
-    if (!isPostMediaUrl(url) || seen.has(key)) return;
-
-    seen.add(key);
-    media.push({ type: inferMediaType(url, fallbackType), url });
+    addMediaCandidate(value, media, seen, fallbackType);
     return;
   }
 
@@ -153,7 +201,7 @@ function collectMedia(
     const childType = /video|playable/i.test(key) ? "video" : fallbackType;
     if (typeof child === "string") {
       if (/url|uri|src|candidate/i.test(key)) {
-        collectMedia(child, media, seen, childType);
+        addMediaCandidate(child, media, seen, childType);
       }
       continue;
     }
@@ -182,16 +230,11 @@ function extractTargetObjects(value: unknown, shortcode: string, matches: Record
 
 function extractMedia(html: string, shortcode?: string) {
   const media: MediaItem[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
 
   const add = (rawUrl: string | undefined, fallbackType: MediaItem["type"]) => {
     if (!rawUrl) return;
-    const url = cleanValue(rawUrl);
-    const key = mediaKey(url);
-    if (!isMediaUrl(url) || seen.has(key)) return;
-
-    seen.add(key);
-    media.push({ type: inferMediaType(url, fallbackType), url });
+    addMediaCandidate(rawUrl, media, seen, fallbackType);
   };
 
   add(extractMeta(html, "og:video:secure_url"), "video");
@@ -219,24 +262,33 @@ function extractMedia(html: string, shortcode?: string) {
     }
   }
 
-  if (!shortcode || !media.length) {
+  const restrictFallback = media.length > 0;
+  const knownMediaKeys = new Set(media.map((item) => mediaKey(item.url)));
+  const addFallback = (rawUrl: string | undefined, fallbackType: MediaItem["type"]) => {
+    if (!rawUrl) return;
+    const cleanedUrl = cleanValue(rawUrl);
+    if (restrictFallback && !knownMediaKeys.has(mediaKey(cleanedUrl))) return;
+    add(cleanedUrl, fallbackType);
+  };
+
+  {
     const directMatches = html.matchAll(
       /https?:\\?\/\\?\/[^"'\\\s<>]+?\.(?:jpe?g|png|webp|mp4)(?:\?[^"'\\\s<>]*)?/gi,
     );
     for (const match of directMatches) {
       const url = cleanValue(match[0]);
-      if (isPostMediaUrl(url)) add(url, inferMediaType(url));
+      if (isPostMediaUrl(url)) addFallback(url, inferMediaType(url));
     }
 
     const videoMatches = html.matchAll(
       /["'](?:video_url|playable_url|video_versions)["']\s*:\s*["']([^"']+)["']/gi,
     );
-    for (const match of videoMatches) add(match[1], "video");
+    for (const match of videoMatches) addFallback(match[1], "video");
 
     const displayMatches = html.matchAll(
       /["'](?:display_url|display_uri)["']\s*:\s*["']([^"']+)["']/gi,
     );
-    for (const match of displayMatches) add(match[1], "image");
+    for (const match of displayMatches) addFallback(match[1], "image");
   }
 
   return media;
@@ -291,14 +343,24 @@ function mediaKey(value: string) {
 }
 
 function mergeMedia(...groups: MediaItem[][]) {
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const merged: MediaItem[] = [];
 
   for (const group of groups) {
     for (const item of group) {
       const key = mediaKey(item.url);
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const score = mediaQualityScore(item.url);
+      const existingScore = seen.get(key);
+      const existingIndex = merged.findIndex((candidate) => mediaKey(candidate.url) === key);
+
+      if (existingIndex >= 0) {
+        if (existingScore !== undefined && score <= existingScore) continue;
+        merged[existingIndex] = item;
+        seen.set(key, score);
+        continue;
+      }
+
+      seen.set(key, score);
       merged.push(item);
       if (merged.length >= MAX_CAROUSEL_ITEMS) return merged;
     }
