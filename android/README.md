@@ -4,10 +4,10 @@ This small native companion adds a real Android share-sheet target named **Downl
 
 1. the receiver reads the shared URL;
 2. the receiver schedules the existing Vercel `/api/resolve` endpoint;
-3. Android `DownloadManager` queues each signed original CDN URL directly in the device's `Downloads` folder;
+3. Android `DownloadManager` queues each original image or video in the device's `Downloads` folder;
 4. the receiver finishes immediately and leaves no visible app screen behind.
 
-The Vercel app does not store the files or proxy the media bytes on this native path. It only resolves the public media URL once; Android owns the background transfer and local file storage.
+The Vercel app does not store the files. It only resolves the public media URL and streams the requested file through `/api/download`; Android owns the background transfer and local file storage.
 
 ## Build
 

@@ -21,6 +21,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Locale;
@@ -86,15 +87,14 @@ public final class ShareDownloadWorker extends Worker {
                 boolean video = "video".equals(mediaType);
                 String baseName = identity[0] + "-" + identity[1] + "-" + randomToken(6);
                 String fileName = baseName + (video ? ".mp4" : ".jpg");
+                String downloadUrl = BuildConfig.DOWNLOADER_BASE_URL
+                        + "/api/download?url=" + encode(mediaUrl)
+                        + "&name=" + encode(baseName);
 
-                // The resolver is the only Vercel request. The media bytes go
-                // directly from Instagram's signed CDN URL to Android.
-                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(mediaUrl));
+                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(downloadUrl));
                 request.setTitle(fileName);
                 request.setDescription("Instagram media");
                 request.setMimeType(video ? "video/mp4" : "image/jpeg");
-                request.addRequestHeader("User-Agent", "Mozilla/5.0 (Android) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
-                request.addRequestHeader("Referer", "https://www.instagram.com/");
                 request.setNotificationVisibility(
                         DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                 );
@@ -264,6 +264,14 @@ public final class ShareDownloadWorker extends Worker {
                     || "http".equalsIgnoreCase(uri.getScheme());
         } catch (RuntimeException ignored) {
             return false;
+        }
+    }
+
+    private static String encode(String value) {
+        try {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
+        } catch (Exception error) {
+            return Uri.encode(value);
         }
     }
 
