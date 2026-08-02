@@ -16,6 +16,7 @@ const REQUEST_HEADERS = {
 };
 
 const UPSTREAM_TIMEOUT_MS = 6500;
+const MAX_CAROUSEL_ITEMS = 20;
 
 type MediaItem = {
   type: "image" | "video";
@@ -84,6 +85,20 @@ function isMediaUrl(value: string) {
   }
 }
 
+function isPostMediaUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return (
+      isMediaUrl(value) &&
+      (host.startsWith("scontent.") || host.endsWith(".fbcdn.net")) &&
+      /\/v\/t51\./i.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function inferMediaType(url: string, fallback: MediaItem["type"] = "image") {
   return /\.(mp4|mov|m4v)(?:$|[?#])/i.test(url) || /video/i.test(url)
     ? "video"
@@ -107,6 +122,14 @@ function extractMedia(html: string) {
   add(extractMeta(html, "og:video"), "video");
   add(extractMeta(html, "og:image"), "image");
 
+  const directMatches = html.matchAll(
+    /https?:\\?\/\\?\/[^"'\\\s<>]+?\.(?:jpe?g|png|webp|mp4)(?:\?[^"'\\\s<>]*)?/gi,
+  );
+  for (const match of directMatches) {
+    const url = cleanValue(match[0]);
+    if (isPostMediaUrl(url)) add(url, inferMediaType(url));
+  }
+
   const videoMatches = html.matchAll(
     /["'](?:video_url|playable_url|video_versions)["']\s*:\s*["']([^"']+)["']/gi,
   );
@@ -117,7 +140,7 @@ function extractMedia(html: string) {
   );
   for (const match of displayMatches) add(match[1], "image");
 
-  return media.slice(0, 8);
+  return media;
 }
 
 function getPostKind(pathname: string) {
@@ -134,9 +157,34 @@ function getEmbedUrl(url: URL) {
   return `https://www.instagram.com${path}/embed/captioned/`;
 }
 
-function getMediaEndpointUrl(url: URL) {
+function getMediaEndpointUrl(url: URL, index: number) {
   const path = url.pathname.replace(/\/$/, "");
-  return `https://www.instagram.com${path}/media/?size=l`;
+  return `https://www.instagram.com${path}/media/?size=l&img_index=${index}`;
+}
+
+function mediaKey(value: string) {
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return value;
+  }
+}
+
+function mergeMedia(...groups: MediaItem[][]) {
+  const seen = new Set<string>();
+  const merged: MediaItem[] = [];
+
+  for (const group of groups) {
+    for (const item of group) {
+      const key = mediaKey(item.url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(item);
+      if (merged.length >= MAX_CAROUSEL_ITEMS) return merged;
+    }
+  }
+
+  return merged;
 }
 
 async function fetchHtml(target: string) {
@@ -177,13 +225,23 @@ async function fetchMediaEndpoint(target: string): Promise<MediaItem | undefined
     const isVideo = contentType.startsWith("video/");
     await response.body?.cancel();
 
-    if (!response.ok || (!isImage && !isVideo)) return undefined;
-    return { type: isVideo ? "video" : "image", url: target };
+    if (!response.ok || (!isImage && !isVideo) || !isMediaUrl(response.url)) return undefined;
+    return { type: isVideo ? "video" : "image", url: response.url };
   } catch {
     return undefined;
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function fetchCarouselMedia(url: URL) {
+  if (getPostKind(url.pathname) === "story") return [];
+
+  const targets = Array.from({ length: MAX_CAROUSEL_ITEMS }, (_, index) =>
+    getMediaEndpointUrl(url, index),
+  );
+  const results = await Promise.all(targets.map(fetchMediaEndpoint));
+  return mergeMedia(results.filter((item): item is MediaItem => Boolean(item)));
 }
 
 export async function POST(request: Request) {
@@ -204,17 +262,13 @@ export async function POST(request: Request) {
 
     const canonicalUrl = `https://www.instagram.com${sourceUrl.pathname}`;
     const embedUrl = getEmbedUrl(sourceUrl);
-    const mediaEndpointUrl = getMediaEndpointUrl(sourceUrl);
     const fetchTargets = [canonicalUrl, embedUrl];
-    const [htmlChunks, mediaEndpoint] = await Promise.all([
+    const [htmlChunks, endpointMedia] = await Promise.all([
       Promise.all(fetchTargets.map(fetchHtml)),
-      getPostKind(sourceUrl.pathname) === "story"
-        ? Promise.resolve(undefined)
-        : fetchMediaEndpoint(mediaEndpointUrl),
+      fetchCarouselMedia(sourceUrl),
     ]);
     const html = htmlChunks.join("\n");
-    const media = extractMedia(html);
-    if (mediaEndpoint) media.unshift(mediaEndpoint);
+    const media = mergeMedia(endpointMedia, extractMedia(html));
     const caption = extractMeta(html, "og:description");
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
