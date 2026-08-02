@@ -1,11 +1,16 @@
 "use client";
 
 import {
+  ArrowSquareOut,
   ArrowUpRight,
+  ArrowsOut,
   ClipboardText,
   DownloadSimple,
   LinkSimple,
+  Pause,
   Play,
+  SpeakerHigh,
+  SpeakerSlash,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -33,6 +38,15 @@ type ResolveResult = {
 
 type DownloadSource = Pick<ResolveResult, "canonicalUrl" | "sourceUsername" | "sourceId">;
 type ViewState = "idle" | "loading" | "success" | "embed-only" | "error";
+type DownloadPhase = "downloading" | "preparing" | "complete";
+type DownloadProgressState = {
+  current: number;
+  total: number;
+  percent: number;
+  phase: DownloadPhase;
+  indeterminate: boolean;
+};
+type DownloadProgressCallback = (loaded: number, total?: number) => void;
 
 const INSTAGRAM_HOSTS = new Set([
   "instagram.com",
@@ -121,7 +135,38 @@ function getDownloadFileName(media: MediaItem, baseName: string) {
   return `${baseName}.${media.type === "video" ? "mp4" : "png"}`;
 }
 
-async function fetchMediaBlob(media: MediaItem, baseName: string) {
+async function readResponseBlob(response: Response, onProgress: DownloadProgressCallback) {
+  const contentType = response.headers.get("content-type") ?? undefined;
+  const contentLength = Number(response.headers.get("content-length"));
+  const total = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : undefined;
+
+  if (!response.body) {
+    const blob = await response.blob();
+    onProgress(blob.size, total ?? blob.size);
+    return blob;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value);
+    loaded += value.byteLength;
+    onProgress(loaded, total);
+  }
+
+  return new Blob(chunks as BlobPart[], { type: contentType });
+}
+
+async function fetchMediaBlob(
+  media: MediaItem,
+  baseName: string,
+  onProgress: DownloadProgressCallback,
+) {
   try {
     const directResponse = await fetch(media.url, {
       cache: "no-store",
@@ -131,7 +176,7 @@ async function fetchMediaBlob(media: MediaItem, baseName: string) {
     const expectedType = media.type === "video" ? "video/" : "image/";
 
     if (directResponse.ok && contentType.startsWith(expectedType)) {
-      return directResponse.blob();
+      return readResponseBlob(directResponse, onProgress);
     }
   } catch {
     // Some CDN variants reject browser fetches; use the same-origin fallback below.
@@ -141,13 +186,19 @@ async function fetchMediaBlob(media: MediaItem, baseName: string) {
     cache: "no-store",
   });
   if (!fallbackResponse.ok) throw new Error("Download proxy unavailable");
-  return fallbackResponse.blob();
+  return readResponseBlob(fallbackResponse, onProgress);
 }
 
-async function prepareDownloadBlob(media: MediaItem, baseName: string) {
-  const sourceBlob = await fetchMediaBlob(media, baseName);
+async function prepareDownloadBlob(
+  media: MediaItem,
+  baseName: string,
+  onProgress: DownloadProgressCallback,
+  onPreparing: () => void,
+) {
+  const sourceBlob = await fetchMediaBlob(media, baseName, onProgress);
   if (media.type === "video") return sourceBlob;
 
+  onPreparing();
   const sourceUrl = URL.createObjectURL(sourceBlob);
   try {
     const image = new Image();
@@ -180,14 +231,15 @@ export default function Home() {
   const [result, setResult] = useState<ResolveResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [downloadMessage, setDownloadMessage] = useState("");
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState | null>(null);
   const [pasteState, setPasteState] = useState<"idle" | "pasting">("idle");
-  const autoDownloadRef = useRef("");
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const lastLookupRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingDownloadsRef = useRef<number[]>([]);
   const downloadSequenceRef = useRef(0);
+  const progressResetRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
@@ -195,15 +247,67 @@ export default function Home() {
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       requestRef.current?.abort();
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      if (progressResetRef.current) window.clearTimeout(progressResetRef.current);
     };
   }, []);
 
   const downloadMedia = useCallback(
-    async (media: MediaItem, source: DownloadSource) => {
+    async (media: MediaItem, source: DownloadSource, index: number, total: number) => {
       const baseName = getDownloadBaseName(source);
+      if (progressResetRef.current) {
+        window.clearTimeout(progressResetRef.current);
+        progressResetRef.current = null;
+      }
+
+      const markComplete = () => {
+        setDownloadProgress({
+          current: index + 1,
+          total,
+          percent: ((index + 1) / total) * 100,
+          phase: "complete",
+          indeterminate: false,
+        });
+
+        if (index === total - 1) {
+          progressResetRef.current = window.setTimeout(() => {
+            setDownloadProgress(null);
+            progressResetRef.current = null;
+          }, 1400);
+        }
+      };
+
+      setDownloadProgress({
+        current: index + 1,
+        total,
+        percent: (index / total) * 100,
+        phase: "downloading",
+        indeterminate: true,
+      });
 
       try {
-        const blob = await prepareDownloadBlob(media, baseName);
+        const blob = await prepareDownloadBlob(
+          media,
+          baseName,
+          (loaded, bytesTotal) => {
+            const fraction = bytesTotal ? Math.min(loaded / bytesTotal, 1) : 0.12;
+            setDownloadProgress({
+              current: index + 1,
+              total,
+              percent: Math.min(99, ((index + fraction) / total) * 100),
+              phase: "downloading",
+              indeterminate: !bytesTotal,
+            });
+          },
+          () => {
+            setDownloadProgress((previous) => ({
+              current: index + 1,
+              total,
+              percent: Math.max(previous?.percent ?? 0, ((index + 0.94) / total) * 100),
+              phase: "preparing",
+              indeterminate: false,
+            }));
+          },
+        );
         const objectUrl = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = objectUrl;
@@ -217,22 +321,31 @@ export default function Home() {
         window.open(media.url, "_blank", "noopener,noreferrer");
         setDownloadMessage("The media source was opened.");
       }
+
+      markComplete();
     },
     [],
   );
 
-  const queueImmediateDownloads = useCallback(
+  const queueDownloads = useCallback(
     (media: MediaItem[], source: DownloadSource) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
 
       setDownloadMessage("Downloads starting.");
+      setDownloadProgress({
+        current: 1,
+        total: media.length,
+        percent: 0,
+        phase: "downloading",
+        indeterminate: true,
+      });
 
       const downloadNext = async (index: number) => {
         if (downloadSequenceRef.current !== sequence || !media[index]) return;
 
-        await downloadMedia(media[index], source);
+        await downloadMedia(media[index], source, index, media.length);
         if (downloadSequenceRef.current !== sequence) return;
 
         if (index === media.length - 1) {
@@ -270,10 +383,15 @@ export default function Home() {
       pendingDownloadsRef.current = [];
       const controller = new AbortController();
       requestRef.current = controller;
+      if (progressResetRef.current) {
+        window.clearTimeout(progressResetRef.current);
+        progressResetRef.current = null;
+      }
       setUrl(normalized);
       setResult(null);
       setErrorMessage("");
       setDownloadMessage("");
+      setDownloadProgress(null);
       setViewState("loading");
 
       try {
@@ -288,18 +406,13 @@ export default function Home() {
 
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
-
-        if (payload.status === "ready" && payload.media.length && autoDownloadRef.current !== normalized) {
-          autoDownloadRef.current = normalized;
-          queueImmediateDownloads(payload.media, payload);
-        }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setViewState("error");
         setErrorMessage(error instanceof Error ? error.message : "That link could not be read.");
       }
     },
-    [queueImmediateDownloads],
+    [],
   );
 
   const queueLookup = (value: string) => {
@@ -331,22 +444,26 @@ export default function Home() {
 
   const downloadAllMedia = useCallback(
     (media: MediaItem[], source: DownloadSource) => {
-      queueImmediateDownloads(media, source);
+      queueDownloads(media, source);
     },
-    [queueImmediateDownloads],
+    [queueDownloads],
   );
 
   const clearAll = () => {
     requestRef.current?.abort();
     downloadSequenceRef.current += 1;
     lastLookupRef.current = "";
-    autoDownloadRef.current = "";
     pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
     pendingDownloadsRef.current = [];
+    if (progressResetRef.current) {
+      window.clearTimeout(progressResetRef.current);
+      progressResetRef.current = null;
+    }
     setUrl("");
     setResult(null);
     setErrorMessage("");
     setDownloadMessage("");
+    setDownloadProgress(null);
     setViewState("idle");
     inputRef.current?.focus();
   };
@@ -421,6 +538,7 @@ export default function Home() {
       </section>
 
       <section className="workspace-section" aria-live="polite">
+        {downloadProgress ? <DownloadProgressBar progress={downloadProgress} /> : null}
         {result?.media.length ? (
           <div className="workspace-tools">
             <span className="workspace-label">{result.media.length} media</span>
@@ -432,12 +550,15 @@ export default function Home() {
               title="Download all"
             >
               <DownloadSimple size={17} weight="bold" />
+              <span>Download all</span>
             </button>
           </div>
         ) : null}
 
         {viewState === "loading" ? <LoadingState /> : null}
-        {viewState === "success" && result ? <ResultState result={result} onDownload={downloadMedia} /> : null}
+        {viewState === "success" && result ? (
+          <ResultState result={result} onDownload={downloadMedia} />
+        ) : null}
         {viewState === "embed-only" && result ? <EmbedOnlyState result={result} /> : null}
         {downloadMessage ? <p className="sr-only" role="status">{downloadMessage}</p> : null}
       </section>
@@ -455,12 +576,180 @@ function LoadingState() {
   );
 }
 
+function DownloadProgressBar({ progress }: { progress: DownloadProgressState }) {
+  const label =
+    progress.phase === "preparing"
+      ? "Preparing"
+      : progress.phase === "complete"
+        ? "Saved"
+        : "Downloading";
+
+  return (
+    <div
+      className="download-progress"
+      role="status"
+      aria-label={`${label} media ${progress.current} of ${progress.total}`}
+    >
+      <div className="download-progress-meta">
+        <span>{label}</span>
+        <span>{progress.current} / {progress.total}</span>
+      </div>
+      <div className="download-progress-track">
+        <span
+          className={progress.indeterminate ? "is-indeterminate" : ""}
+          style={{ width: `${progress.percent}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function formatTime(value: number) {
+  if (!Number.isFinite(value) || value < 0) return "0:00";
+  const seconds = Math.floor(value);
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function VideoPlayer({ media, label }: { media: MediaItem; label: string }) {
+  const shellRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setIsFullscreen(document.fullscreenElement === shellRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreenState);
+  }, []);
+
+  const togglePlay = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play().catch(() => undefined);
+    } else {
+      video.pause();
+    }
+  };
+
+  const toggleMute = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setMuted(video.muted);
+  };
+
+  const toggleFullscreen = async () => {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      return;
+    }
+    await shellRef.current?.requestFullscreen();
+  };
+
+  return (
+    <div className="video-shell" ref={shellRef}>
+      <video
+        ref={videoRef}
+        playsInline
+        preload="metadata"
+        poster={media.thumbnailUrl}
+        src={media.url}
+        aria-label={label}
+        onClick={togglePlay}
+        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => setIsPlaying(false)}
+        onVolumeChange={(event) => {
+          setMuted(event.currentTarget.muted);
+          setVolume(event.currentTarget.volume);
+        }}
+      />
+      <div className="video-controls">
+        <button
+          className="video-control-button"
+          type="button"
+          onClick={togglePlay}
+          aria-label={isPlaying ? "Pause video" : "Play video"}
+          title={isPlaying ? "Pause" : "Play"}
+        >
+          {isPlaying ? <Pause size={15} weight="fill" /> : <Play size={15} weight="fill" />}
+        </button>
+        <input
+          className="video-range video-seek"
+          type="range"
+          min="0"
+          max={duration || 0}
+          step="0.1"
+          value={Math.min(currentTime, duration || 0)}
+          onChange={(event) => {
+            const nextTime = Number(event.target.value);
+            if (videoRef.current) videoRef.current.currentTime = nextTime;
+            setCurrentTime(nextTime);
+          }}
+          aria-label="Seek video"
+          disabled={!duration}
+        />
+        <span className="video-time" aria-label="Video time">
+          {formatTime(currentTime)} / {formatTime(duration)}
+        </span>
+        <button
+          className="video-control-button video-volume-button"
+          type="button"
+          onClick={toggleMute}
+          aria-label={muted ? "Unmute video" : "Mute video"}
+          title={muted ? "Unmute" : "Mute"}
+        >
+          {muted ? <SpeakerSlash size={15} /> : <SpeakerHigh size={15} />}
+        </button>
+        <input
+          className="video-range video-volume"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={muted ? 0 : volume}
+          onChange={(event) => {
+            const nextVolume = Number(event.target.value);
+            if (videoRef.current) {
+              videoRef.current.volume = nextVolume;
+              videoRef.current.muted = nextVolume === 0;
+            }
+            setVolume(nextVolume);
+            setMuted(nextVolume === 0);
+          }}
+          aria-label="Video volume"
+        />
+        <button
+          className="video-control-button"
+          type="button"
+          onClick={() => void toggleFullscreen()}
+          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+        >
+          <ArrowsOut size={15} weight="bold" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ResultState({
   result,
   onDownload,
 }: {
   result: ResolveResult;
-  onDownload: (media: MediaItem, source: DownloadSource) => void;
+  onDownload: (media: MediaItem, source: DownloadSource, index: number, total: number) => void;
 }) {
   return (
     <div className="result-state">
@@ -469,13 +758,9 @@ function ResultState({
           <article className="media-card" key={`${media.url}-${index}`}>
             <div className="media-frame">
               {media.type === "video" ? (
-                <video
-                  controls
-                  playsInline
-                  preload="metadata"
-                  poster={media.thumbnailUrl}
-                  src={media.url}
-                  aria-label={`${labelForKind(result.kind)} video ${index + 1}`}
+                <VideoPlayer
+                  media={media}
+                  label={`${labelForKind(result.kind)} video ${index + 1}`}
                 />
               ) : (
                 <img
@@ -493,16 +778,16 @@ function ResultState({
                     href={media.url}
                     target="_blank"
                     rel="noreferrer"
-                    aria-label="Open video in HTML5 player"
-                    title="Open HTML5 player"
+                    aria-label="Open video in a new tab"
+                    title="Open in new tab"
                   >
-                    <Play size={16} weight="fill" />
+                    <ArrowSquareOut size={17} weight="bold" />
                   </a>
                 ) : null}
                 <button
                   className="media-download"
                   type="button"
-                  onClick={() => onDownload(media, result)}
+                  onClick={() => onDownload(media, result, index, result.media.length)}
                   aria-label={`Download ${media.type} ${index + 1}`}
                   title={`Download ${media.type}`}
                 >
