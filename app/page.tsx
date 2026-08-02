@@ -63,6 +63,33 @@ function normalizeInstagramUrl(value: string) {
   }
 }
 
+function normalizeSharedInstagramUrl(value: string | null) {
+  if (!value?.trim()) return null;
+
+  try {
+    const parsed = new URL(value.trim());
+    const redirectedUrl = parsed.searchParams.get("u");
+    if (redirectedUrl) return normalizeSharedInstagramUrl(redirectedUrl);
+  } catch {
+    // Shared text often contains a URL alongside other words.
+  }
+
+  const match = value.match(
+    /https?:\/\/(?:www\.)?(?:instagram\.com|instagr\.am)\/[^\s<>"']+/i,
+  );
+  const candidate = (match?.[0] ?? value).replace(/[),.;!?]+$/g, "");
+  return normalizeInstagramUrl(candidate);
+}
+
+function getSharedInstagramUrl() {
+  const params = new URLSearchParams(window.location.search);
+  for (const value of [params.get("url"), params.get("text"), params.get("title")]) {
+    const normalized = normalizeSharedInstagramUrl(value);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function labelForKind(kind: string) {
   if (kind === "reel") return "reel";
   if (kind === "video") return "video";
@@ -232,6 +259,7 @@ export default function Home() {
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState | null>(null);
   const [pasteState, setPasteState] = useState<"idle" | "pasting">("idle");
   const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(false);
+  const [autoDownloadPreferenceReady, setAutoDownloadPreferenceReady] = useState(false);
   const debounceRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const lastLookupRef = useRef("");
@@ -239,13 +267,21 @@ export default function Home() {
   const pendingDownloadsRef = useRef<number[]>([]);
   const downloadSequenceRef = useRef(0);
   const progressResetRef = useRef<number | null>(null);
+  const sharedLookupRef = useRef("");
 
   useEffect(() => {
     try {
       setAutoDownloadEnabled(window.localStorage.getItem(AUTO_DOWNLOAD_STORAGE_KEY) === "true");
     } catch {
       setAutoDownloadEnabled(false);
+    } finally {
+      setAutoDownloadPreferenceReady(true);
     }
+  }, []);
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    void navigator.serviceWorker.register("/sw.js", { scope: "/" });
   }, []);
 
   useEffect(() => {
@@ -413,7 +449,12 @@ export default function Home() {
 
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
-        if (autoDownloadEnabled && payload.status === "ready" && payload.media.length) {
+        if (
+          autoDownloadPreferenceReady &&
+          autoDownloadEnabled &&
+          payload.status === "ready" &&
+          payload.media.length
+        ) {
           queueDownloads(payload.media, payload);
         }
       } catch (error) {
@@ -422,8 +463,18 @@ export default function Home() {
         setErrorMessage(error instanceof Error ? error.message : "That link could not be read.");
       }
     },
-    [autoDownloadEnabled, queueDownloads],
+    [autoDownloadEnabled, autoDownloadPreferenceReady, queueDownloads],
   );
+
+  useEffect(() => {
+    if (!autoDownloadPreferenceReady) return;
+    const sharedUrl = getSharedInstagramUrl();
+    if (!sharedUrl || sharedLookupRef.current === sharedUrl) return;
+
+    sharedLookupRef.current = sharedUrl;
+    window.history.replaceState(null, "", window.location.pathname);
+    void resolveUrl(sharedUrl, true);
+  }, [autoDownloadPreferenceReady, resolveUrl]);
 
   const queueLookup = (value: string) => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
