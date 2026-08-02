@@ -17,6 +17,12 @@ A focused Next.js utility for resolving media exposed by public Instagram post, 
 
 This app does not bypass Instagram login walls, private accounts, rate limits, or media URLs that Instagram does not expose to an embed or public page request. Use it only for content you own or have permission to save.
 
+## Android share-sheet companion
+
+The optional native Android companion in [`android/`](./android/) adds a `Download images` target to the Android share sheet. It receives a shared Instagram URL, queues the original media with Android's system `DownloadManager`, and finishes its invisible receiver activity immediately. Files are saved to the device's Downloads folder; the Vercel app does not store them.
+
+The companion source is built by [`.github/workflows/android.yml`](./.github/workflows/android.yml), which publishes a debug APK as a GitHub Actions artifact. Install that APK on Android to make the native target appear in the share sheet. The browser/PWA path remains available independently.
+
 ## Run locally
 
 ```bash

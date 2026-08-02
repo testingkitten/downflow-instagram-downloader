@@ -1,0 +1,38 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "com.testingkitten.downloadimages"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.testingkitten.downloadimages"
+        minSdk 29
+        targetSdk 36
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildConfigField "String", "DOWNLOADER_BASE_URL", '"https://instagram-downloader-five-red.vercel.app"'
+}
+
+dependencies {
+    implementation "androidx.work:work-runtime:2.11.2"
+}
