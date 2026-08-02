@@ -3,14 +3,9 @@
 import {
   ArrowSquareOut,
   ArrowUpRight,
-  ArrowsOut,
   ClipboardText,
   DownloadSimple,
   LinkSimple,
-  Pause,
-  Play,
-  SpeakerHigh,
-  SpeakerSlash,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -604,146 +599,6 @@ function DownloadProgressBar({ progress }: { progress: DownloadProgressState }) 
   );
 }
 
-function formatTime(value: number) {
-  if (!Number.isFinite(value) || value < 0) return "0:00";
-  const seconds = Math.floor(value);
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-function VideoPlayer({ media, label }: { media: MediaItem; label: string }) {
-  const shellRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(1);
-  const [muted, setMuted] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-
-  useEffect(() => {
-    const syncFullscreenState = () => {
-      setIsFullscreen(document.fullscreenElement === shellRef.current);
-    };
-
-    document.addEventListener("fullscreenchange", syncFullscreenState);
-    return () => document.removeEventListener("fullscreenchange", syncFullscreenState);
-  }, []);
-
-  const togglePlay = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
-      void video.play().catch(() => undefined);
-    } else {
-      video.pause();
-    }
-  };
-
-  const toggleMute = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = !video.muted;
-    setMuted(video.muted);
-  };
-
-  const toggleFullscreen = async () => {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-      return;
-    }
-    await shellRef.current?.requestFullscreen();
-  };
-
-  return (
-    <div className="video-shell" ref={shellRef}>
-      <video
-        ref={videoRef}
-        playsInline
-        preload="metadata"
-        poster={media.thumbnailUrl}
-        src={media.url}
-        aria-label={label}
-        onClick={togglePlay}
-        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
-        onEnded={() => setIsPlaying(false)}
-        onVolumeChange={(event) => {
-          setMuted(event.currentTarget.muted);
-          setVolume(event.currentTarget.volume);
-        }}
-      />
-      <div className="video-controls">
-        <button
-          className="video-control-button"
-          type="button"
-          onClick={togglePlay}
-          aria-label={isPlaying ? "Pause video" : "Play video"}
-          title={isPlaying ? "Pause" : "Play"}
-        >
-          {isPlaying ? <Pause size={15} weight="fill" /> : <Play size={15} weight="fill" />}
-        </button>
-        <input
-          className="video-range video-seek"
-          type="range"
-          min="0"
-          max={duration || 0}
-          step="0.1"
-          value={Math.min(currentTime, duration || 0)}
-          onChange={(event) => {
-            const nextTime = Number(event.target.value);
-            if (videoRef.current) videoRef.current.currentTime = nextTime;
-            setCurrentTime(nextTime);
-          }}
-          aria-label="Seek video"
-          disabled={!duration}
-        />
-        <span className="video-time" aria-label="Video time">
-          {formatTime(currentTime)} / {formatTime(duration)}
-        </span>
-        <button
-          className="video-control-button video-volume-button"
-          type="button"
-          onClick={toggleMute}
-          aria-label={muted ? "Unmute video" : "Mute video"}
-          title={muted ? "Unmute" : "Mute"}
-        >
-          {muted ? <SpeakerSlash size={15} /> : <SpeakerHigh size={15} />}
-        </button>
-        <input
-          className="video-range video-volume"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={muted ? 0 : volume}
-          onChange={(event) => {
-            const nextVolume = Number(event.target.value);
-            if (videoRef.current) {
-              videoRef.current.volume = nextVolume;
-              videoRef.current.muted = nextVolume === 0;
-            }
-            setVolume(nextVolume);
-            setMuted(nextVolume === 0);
-          }}
-          aria-label="Video volume"
-        />
-        <button
-          className="video-control-button"
-          type="button"
-          onClick={() => void toggleFullscreen()}
-          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-          title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-        >
-          <ArrowsOut size={15} weight="bold" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function ResultState({
   result,
   onDownload,
@@ -753,14 +608,21 @@ function ResultState({
 }) {
   return (
     <div className="result-state">
-      <div className="media-grid" aria-label={`${result.media.length} Instagram media items`}>
+      <div
+        className={`media-grid ${result.media.length === 1 ? "single-media" : "multi-media"}`}
+        aria-label={`${result.media.length} Instagram media items`}
+      >
         {result.media.map((media, index) => (
           <article className="media-card" key={`${media.url}-${index}`}>
             <div className="media-frame">
               {media.type === "video" ? (
-                <VideoPlayer
-                  media={media}
-                  label={`${labelForKind(result.kind)} video ${index + 1}`}
+                <video
+                  controls
+                  playsInline
+                  preload="metadata"
+                  poster={media.thumbnailUrl}
+                  src={media.url}
+                  aria-label={`${labelForKind(result.kind)} video ${index + 1}`}
                 />
               ) : (
                 <img
