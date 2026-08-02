@@ -21,6 +21,16 @@ const REQUEST_HEADERS = {
   "X-IG-D": "www",
 };
 
+const API_REQUEST_HEADERS = {
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "User-Agent": REQUEST_HEADERS["User-Agent"],
+  "X-IG-App-ID": "936619743392459",
+  "X-ASBD-ID": "129477",
+  "X-IG-WWW-Claim": "0",
+  "X-Requested-With": "XMLHttpRequest",
+};
+
 const UPSTREAM_TIMEOUT_MS = 6500;
 const MAX_CAROUSEL_ITEMS = 20;
 
@@ -91,6 +101,24 @@ function extractUsername(html: string, description?: string) {
     /["\\']username["\\']\s*:\s*["\\']([a-z0-9._-]{1,50})["\\']/i,
   );
   return usernameMatch?.[1];
+}
+
+function extractInstagramUserId(html: string, username?: string) {
+  const normalizedHtml = cleanValue(html);
+  const userMatches = normalizedHtml.matchAll(
+    /"xig_user_by_username"\s*:\s*\{\s*"pk"\s*:\s*"?(\d+)"?\s*,\s*"username"\s*:\s*"([^"]+)"/gi,
+  );
+
+  for (const match of userMatches) {
+    if (!username || match[2].toLowerCase() === username.toLowerCase()) {
+      return match[1];
+    }
+  }
+
+  return (
+    normalizedHtml.match(/"profile_id"\s*:\s*"(\d+)"/i)?.[1] ??
+    normalizedHtml.match(/profilePage_(\d+)/i)?.[1]
+  );
 }
 
 function isMediaUrl(value: string) {
@@ -433,6 +461,139 @@ function removeVideoThumbnails(media: MediaItem[]) {
   );
 }
 
+type StoryVariant = {
+  url: string;
+  width: number;
+  height: number;
+  bitrate: number;
+};
+
+function readStoryVariants(value: unknown): StoryVariant[] {
+  if (typeof value === "string") {
+    return [{ url: cleanValue(value), width: 0, height: 0, bitrate: 0 }];
+  }
+
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((candidate) => {
+    if (typeof candidate === "string") {
+      return [{ url: cleanValue(candidate), width: 0, height: 0, bitrate: 0 }];
+    }
+
+    if (!candidate || typeof candidate !== "object") return [];
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.url !== "string") return [];
+
+    const width = Number(record.width);
+    const height = Number(record.height);
+    const bitrate = Number(record.bitrate);
+    return [
+      {
+        url: cleanValue(record.url),
+        width: Number.isFinite(width) ? width : 0,
+        height: Number.isFinite(height) ? height : 0,
+        bitrate: Number.isFinite(bitrate) ? bitrate : 0,
+      },
+    ];
+  });
+}
+
+function storyVariantScore(variant: StoryVariant) {
+  return (
+    Math.max(variant.width, variant.height) * 1_000_000 +
+    variant.width * variant.height +
+    variant.bitrate +
+    mediaQualityScore(variant.url)
+  );
+}
+
+function chooseStoryVariant(value: unknown, preferAudio = false) {
+  const variants = readStoryVariants(value).filter((variant) => isPostMediaUrl(variant.url));
+  if (!variants.length) return undefined;
+
+  const audioVariants = preferAudio
+    ? variants.filter((variant) => isAudioBearingProgressiveVideoUrl(variant.url))
+    : [];
+  const pool = audioVariants.length ? audioVariants : variants;
+  return [...pool].sort((left, right) => storyVariantScore(right) - storyVariantScore(left))[0];
+}
+
+function extractStoryItemRecords(payload: unknown) {
+  const items: Record<string, unknown>[] = [];
+
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+
+    if (!value || typeof value !== "object") return;
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.items)) {
+      for (const item of record.items) {
+        if (item && typeof item === "object") items.push(item as Record<string, unknown>);
+      }
+    }
+
+    for (const child of Object.values(record)) visit(child);
+  };
+
+  visit(payload);
+  return items;
+}
+
+function extractStoryMedia(payload: unknown) {
+  const media: MediaItem[] = [];
+  const seen = new Map<string, number>();
+  const itemKeys = new Set<string>();
+
+  for (const item of extractStoryItemRecords(payload)) {
+    const carouselMedia = Array.isArray(item.carousel_media)
+      ? item.carousel_media.filter(
+          (child): child is Record<string, unknown> =>
+            Boolean(child) && typeof child === "object",
+        )
+      : [];
+    const records = carouselMedia.length ? carouselMedia : [item];
+
+    for (const record of records) {
+      const itemKey = String(record.id ?? record.pk ?? record.code ?? "");
+      if (itemKey && itemKeys.has(itemKey)) continue;
+      if (itemKey) itemKeys.add(itemKey);
+
+      const imageVersions =
+        record.image_versions2 && typeof record.image_versions2 === "object"
+          ? (record.image_versions2 as Record<string, unknown>).candidates
+          : undefined;
+      const imageVariant = chooseStoryVariant(imageVersions);
+      const videoVariant = chooseStoryVariant(
+        record.video_versions ?? record.video_url,
+        true,
+      );
+      const isVideo =
+        Number(record.media_type) === 2 ||
+        Boolean(videoVariant) ||
+        typeof record.video_url === "string";
+
+      if (isVideo && videoVariant) {
+        addMediaCandidate(
+          videoVariant.url,
+          media,
+          seen,
+          "video",
+          imageVariant?.url,
+        );
+      } else if (!isVideo && imageVariant) {
+        addMediaCandidate(imageVariant.url, media, seen, "image");
+      }
+
+      if (media.length >= MAX_CAROUSEL_ITEMS) return media;
+    }
+  }
+
+  return removeVideoThumbnails(media).slice(0, MAX_CAROUSEL_ITEMS);
+}
+
 function extractMedia(html: string, shortcode?: string) {
   const media: MediaItem[] = [];
   const seen = new Map<string, number>();
@@ -537,6 +698,13 @@ function getPostKind(pathname: string) {
   return "link";
 }
 
+function getStoryUsername(url: URL) {
+  const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  const markerIndex = segments.findIndex((segment) => segment === "stories");
+  const username = segments[markerIndex + 1];
+  return markerIndex >= 0 && username && username !== "highlights" ? username : undefined;
+}
+
 function getSourceIdentity(value: string, fallbackUsername?: string, fallbackId?: string) {
   try {
     const segments = new URL(value).pathname
@@ -549,13 +717,19 @@ function getSourceIdentity(value: string, fallbackUsername?: string, fallbackId?
     const marker = segments[markerIndex];
     const pathUsername =
       marker === "stories"
-        ? segments[markerIndex + 1]
+        ? segments[markerIndex + 1] === "highlights"
+          ? undefined
+          : segments[markerIndex + 1]
         : markerIndex > 0
           ? segments[markerIndex - 1]
           : undefined;
     const username = pathUsername ?? fallbackUsername ?? "instagram";
+    const storyId =
+      marker === "stories" && segments[markerIndex + 1] === "highlights"
+        ? segments[markerIndex + 2]
+        : segments[markerIndex + 1];
     const postId =
-      fallbackId ?? segments[markerIndex + 1] ?? segments[segments.length - 1] ?? "media";
+      fallbackId ?? storyId ?? segments[segments.length - 1] ?? "media";
 
     return {
       sourceUsername: username || "instagram",
@@ -579,6 +753,15 @@ function getPageFetchUrl(url: URL) {
   pageUrl.searchParams.set("hl", url.searchParams.get("hl") ?? "en");
   pageUrl.searchParams.set("img_index", url.searchParams.get("img_index") ?? "1");
   return pageUrl.toString();
+}
+
+function getStoryProfileFetchUrl(url: URL) {
+  const username = getStoryUsername(url);
+  if (!username) return undefined;
+
+  const profileUrl = new URL(`https://www.instagram.com/${username}/`);
+  profileUrl.searchParams.set("hl", url.searchParams.get("hl") ?? "en");
+  return profileUrl.toString();
 }
 
 function getMediaEndpointUrl(url: URL, index: number) {
@@ -628,6 +811,45 @@ async function fetchHtml(target: string) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function fetchJson(target: string, referer: string) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(target, {
+      headers: { ...API_REQUEST_HEADERS, Referer: referer },
+      redirect: "follow",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    return (await response.json()) as unknown;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchStoryMedia(url: URL, pageHtml: string) {
+  const username = getStoryUsername(url);
+  const profileUrl = getStoryProfileFetchUrl(url);
+  if (!username || !profileUrl) return [];
+
+  let userId = extractInstagramUserId(pageHtml, username);
+  let profileHtml = pageHtml;
+  if (!userId) {
+    profileHtml = await fetchHtml(profileUrl);
+    userId = extractInstagramUserId(profileHtml, username);
+  }
+  if (!userId) return [];
+
+  const endpoint =
+    `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(userId)}`;
+  const payload = await fetchJson(endpoint, profileUrl);
+  return extractStoryMedia(payload);
 }
 
 async function fetchMediaEndpoint(target: string): Promise<MediaItem | undefined> {
@@ -686,9 +908,16 @@ export async function POST(request: Request) {
     let html = pageHtml;
     let extractedMedia = extractMedia(pageHtml, shortcode);
 
+    if (kind === "story") {
+      const storyMedia = await fetchStoryMedia(sourceUrl, pageHtml);
+      if (storyMedia.length) extractedMedia = storyMedia;
+    }
+
     if (
-      !extractedMedia.length ||
-      (["reel", "video"].includes(kind) && !extractedMedia.some((item) => item.type === "video"))
+      kind !== "story" &&
+      (!extractedMedia.length ||
+        (["reel", "video"].includes(kind) &&
+          !extractedMedia.some((item) => item.type === "video")))
     ) {
       const embedHtml = await fetchHtml(embedUrl);
       html = `${pageHtml}\n${embedHtml}`;
@@ -698,7 +927,15 @@ export async function POST(request: Request) {
     const caption = extractMeta(html, "og:description");
     const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
-    const resolvedCanonical = discoveredCanonical ?? canonicalUrl;
+    let resolvedCanonical = discoveredCanonical ?? canonicalUrl;
+
+    try {
+      const discoveredKind = getPostKind(new URL(resolvedCanonical, sourceUrl).pathname);
+      if (kind !== "link" && discoveredKind === "link") resolvedCanonical = canonicalUrl;
+    } catch {
+      resolvedCanonical = canonicalUrl;
+    }
+
     let resolvedKind = kind;
 
     try {
@@ -732,7 +969,9 @@ export async function POST(request: Request) {
         title,
         media: [],
         message:
-          "Instagram did not expose a direct media URL to this request. The public embed is still available below.",
+          resolvedKind === "story"
+            ? "Instagram did not expose an active public story for this account."
+            : "Instagram did not expose a direct media URL to this request. The public embed is still available below.",
       });
     }
 
