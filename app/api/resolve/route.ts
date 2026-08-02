@@ -259,6 +259,7 @@ function getEmbedUrl(url: URL) {
 function getPageFetchUrl(url: URL) {
   const pageUrl = new URL(`https://www.instagram.com${getPostPath(url)}`);
   pageUrl.searchParams.set("hl", url.searchParams.get("hl") ?? "en");
+  pageUrl.searchParams.set("img_index", url.searchParams.get("img_index") ?? "1");
   return pageUrl.toString();
 }
 
