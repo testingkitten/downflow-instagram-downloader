@@ -96,7 +96,7 @@ public final class ShareDownloadWorker extends Worker {
                 request.setDescription("Instagram media");
                 request.setMimeType(video ? "video/mp4" : "image/jpeg");
                 request.setNotificationVisibility(
-                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETION
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                 );
                 request.setAllowedOverMetered(true);
                 request.setAllowedOverRoaming(false);
