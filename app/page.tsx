@@ -354,6 +354,7 @@ export default function Home() {
   return (
     <main className="site-frame">
       <nav className="topbar" aria-label="Primary">
+        <span className="brand-rule" aria-hidden="true" />
         <a className="brand" href="#top" aria-label="Instagram Downloader home">
           Instagram Downloader
         </a>
