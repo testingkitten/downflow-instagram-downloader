@@ -63,7 +63,40 @@ function getDownloadUrl(media: MediaItem, index: number) {
 }
 
 function getDownloadFileName(media: MediaItem, index: number) {
-  return `downflow-${index + 1}.${media.type === "video" ? "mp4" : "jpg"}`;
+  return `downflow-${index + 1}.${media.type === "video" ? "mp4" : "png"}`;
+}
+
+async function prepareDownloadBlob(media: MediaItem, index: number) {
+  const response = await fetch(getDownloadUrl(media, index));
+  if (!response.ok) throw new Error("Download proxy unavailable");
+
+  const sourceBlob = await response.blob();
+  if (media.type === "video") return sourceBlob;
+
+  const sourceUrl = URL.createObjectURL(sourceBlob);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = sourceUrl;
+    await image.decode();
+
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context || !canvas.width || !canvas.height) {
+      throw new Error("Image could not be prepared as PNG");
+    }
+
+    context.drawImage(image, 0, 0);
+    const png = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    if (!png) throw new Error("Image could not be prepared as PNG");
+    return png;
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
 }
 
 export default function Home() {
@@ -80,9 +113,11 @@ export default function Home() {
   const lastLookupRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingDownloadsRef = useRef<number[]>([]);
+  const downloadSequenceRef = useRef(0);
 
   useEffect(() => {
     return () => {
+      downloadSequenceRef.current += 1;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
       requestRef.current?.abort();
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -91,12 +126,8 @@ export default function Home() {
 
   const downloadMedia = useCallback(
     async (media: MediaItem, index = 0) => {
-      const proxyUrl = getDownloadUrl(media, index);
-
       try {
-        const response = await fetch(proxyUrl);
-        if (!response.ok) throw new Error("Download proxy unavailable");
-        const blob = await response.blob();
+        const blob = await prepareDownloadBlob(media, index);
         const objectUrl = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = objectUrl;
@@ -104,7 +135,7 @@ export default function Home() {
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
-        URL.revokeObjectURL(objectUrl);
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
         setDownloadMessage("Download started. Check your browser downloads.");
       } catch {
         window.open(media.url, "_blank", "noopener,noreferrer");
@@ -114,56 +145,42 @@ export default function Home() {
     [],
   );
 
-  const triggerImmediateDownload = useCallback((media: MediaItem, index: number) => {
-    const anchor = document.createElement("a");
-    anchor.href = getDownloadUrl(media, index);
-    anchor.download = getDownloadFileName(media, index);
-    anchor.rel = "noreferrer";
-    anchor.style.display = "none";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-  }, []);
-
-  const triggerImmediateZipDownload = useCallback((media: MediaItem[]) => {
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = "/api/download-all";
-    form.target = "_self";
-    form.style.display = "none";
-
-    const input = document.createElement("input");
-    input.type = "hidden";
-    input.name = "items";
-    input.value = JSON.stringify(media.map(({ type, url }) => ({ type, url })));
-    form.appendChild(input);
-    document.body.appendChild(form);
-    form.submit();
-    form.remove();
-  }, []);
-
   const queueImmediateDownloads = useCallback(
     (media: MediaItem[]) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      pendingDownloadsRef.current = [];
+      const sequence = ++downloadSequenceRef.current;
 
-      if (media.length > 1) {
-        pendingDownloadsRef.current = [
-          window.setTimeout(() => triggerImmediateZipDownload(media), 0),
-        ];
-        setDownloadMessage(
-          `${media.length} files bundled into one ZIP. Check your browser downloads.`,
-        );
-        return;
-      }
-
-      pendingDownloadsRef.current = [
-        window.setTimeout(() => triggerImmediateDownload(media[0], 0), 0),
-      ];
       setDownloadMessage(
-        "Download started. Check your browser downloads.",
+        media.length === 1
+          ? "Starting your individual download."
+          : `Starting ${media.length} individual downloads. If asked, allow multiple downloads.`,
       );
+
+      const downloadNext = async (index: number) => {
+        if (downloadSequenceRef.current !== sequence || !media[index]) return;
+
+        await downloadMedia(media[index], index);
+        if (downloadSequenceRef.current !== sequence) return;
+
+        if (index === media.length - 1) {
+          setDownloadMessage(
+            media.length === 1
+              ? "Download started. Check your browser downloads."
+              : `${media.length} individual downloads started. Check your browser downloads.`,
+          );
+          return;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+          void downloadNext(index + 1);
+        }, 650);
+        pendingDownloadsRef.current.push(timeoutId);
+      };
+
+      void downloadNext(0);
     },
-    [triggerImmediateDownload, triggerImmediateZipDownload],
+    [downloadMedia],
   );
 
   const resolveUrl = useCallback(
@@ -180,6 +197,7 @@ export default function Home() {
       if (!force && lastLookupRef.current === normalized) return;
       lastLookupRef.current = normalized;
       requestRef.current?.abort();
+      downloadSequenceRef.current += 1;
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const controller = new AbortController();
@@ -247,21 +265,14 @@ export default function Home() {
 
   const downloadAllMedia = useCallback(
     (media: MediaItem[]) => {
-      if (media.length > 1) {
-        triggerImmediateZipDownload(media);
-        setDownloadMessage(
-          `${media.length} files bundled into one ZIP. Check your browser downloads.`,
-        );
-        return;
-      }
-
-      if (media[0]) void downloadMedia(media[0], 0);
+      queueImmediateDownloads(media);
     },
-    [downloadMedia, triggerImmediateZipDownload],
+    [queueImmediateDownloads],
   );
 
   const clearAll = () => {
     requestRef.current?.abort();
+    downloadSequenceRef.current += 1;
     lastLookupRef.current = "";
     autoDownloadRef.current = "";
     pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
