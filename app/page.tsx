@@ -405,6 +405,7 @@ async function fetchMediaBlob(media: MediaItem, onProgress: DownloadProgressCall
     cache: "no-store",
     credentials: "omit",
     mode: "cors",
+    referrerPolicy: "no-referrer",
     redirect: "follow",
   });
   const contentType = directResponse.headers.get("content-type") ?? "";
@@ -1202,6 +1203,7 @@ function VideoPlayer({
         cache: "no-store",
         credentials: "omit",
         mode: "cors",
+        referrerPolicy: "no-referrer",
         signal: controller.signal,
       });
       const contentType = response.headers.get("content-type") ?? "";

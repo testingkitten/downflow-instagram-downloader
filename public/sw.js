@@ -1,4 +1,4 @@
-const SHELL_CACHE = "download-images-shell-v2";
+const SHELL_CACHE = "download-images-shell-v3";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
