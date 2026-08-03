@@ -161,18 +161,6 @@ function getDownloadFileName(media: MediaItem, baseName: string) {
   return `${baseName}.${media.type === "video" ? "mp4" : "png"}`;
 }
 
-function startNativeDownload(media: MediaItem, source: DownloadSource) {
-  const baseName = getDownloadBaseName(source);
-  const anchor = document.createElement("a");
-  anchor.href = getDownloadUrl(media, baseName);
-  anchor.download = getDownloadFileName(media, baseName);
-  anchor.rel = "noopener";
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-}
-
 async function readResponseBlob(response: Response, onProgress: DownloadProgressCallback) {
   const contentType = response.headers.get("content-type") ?? undefined;
   const contentLength = Number(response.headers.get("content-length"));
@@ -283,7 +271,25 @@ export default function Home() {
   const downloadSequenceRef = useRef(0);
   const progressResetRef = useRef<number | null>(null);
   const shareCloseRef = useRef<number | null>(null);
+  const shareWakeLockRef = useRef<WakeLockSentinel | null>(null);
   const sharedLookupRef = useRef("");
+
+  const releaseShareWakeLock = useCallback(() => {
+    const wakeLock = shareWakeLockRef.current;
+    shareWakeLockRef.current = null;
+    if (wakeLock) void wakeLock.release().catch(() => undefined);
+  }, []);
+
+  const acquireShareWakeLock = useCallback(async () => {
+    if (document.visibilityState !== "visible" || !navigator.wakeLock) return;
+    if (shareWakeLockRef.current && !shareWakeLockRef.current.released) return;
+
+    try {
+      shareWakeLockRef.current = await navigator.wakeLock.request("screen");
+    } catch {
+      // Wake Lock is optional; the active fetch queue still keeps the PWA open.
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -313,8 +319,20 @@ export default function Home() {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       if (progressResetRef.current) window.clearTimeout(progressResetRef.current);
       if (shareCloseRef.current) window.clearTimeout(shareCloseRef.current);
+      releaseShareWakeLock();
     };
-  }, []);
+  }, [releaseShareWakeLock]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && isShareLaunch && !shareDownloadComplete) {
+        void acquireShareWakeLock();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [acquireShareWakeLock, isShareLaunch, shareDownloadComplete]);
 
   const downloadMedia = useCallback(
     async (media: MediaItem, source: DownloadSource, index: number, total: number) => {
@@ -393,7 +411,7 @@ export default function Home() {
   );
 
   const queueDownloads = useCallback(
-    (media: MediaItem[], source: DownloadSource) => {
+    (media: MediaItem[], source: DownloadSource, onComplete?: () => void) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
@@ -415,6 +433,7 @@ export default function Home() {
 
         if (index === media.length - 1) {
           setDownloadMessage("Downloads complete.");
+          onComplete?.();
           return;
         }
 
@@ -429,21 +448,26 @@ export default function Home() {
     [downloadMedia],
   );
 
-  const handoffShareDownloads = useCallback((media: MediaItem[], source: DownloadSource) => {
-    media.forEach((item) => startNativeDownload(item, source));
-    setDownloadMessage("Downloads sent to device.");
-    setShareDownloadComplete(true);
+  const handoffShareDownloads = useCallback(
+    (media: MediaItem[], source: DownloadSource) => {
+      void acquireShareWakeLock();
+      queueDownloads(media, source, () => {
+        setShareDownloadComplete(true);
+        releaseShareWakeLock();
 
-    if (shareCloseRef.current) window.clearTimeout(shareCloseRef.current);
-    shareCloseRef.current = window.setTimeout(() => {
-      try {
-        window.close();
-      } catch {
-        // Browsers may refuse to close a PWA window they did not open.
-      }
-      shareCloseRef.current = null;
-    }, 180);
-  }, []);
+        if (shareCloseRef.current) window.clearTimeout(shareCloseRef.current);
+        shareCloseRef.current = window.setTimeout(() => {
+          try {
+            window.close();
+          } catch {
+            // Browsers may refuse to close a PWA window they did not open.
+          }
+          shareCloseRef.current = null;
+        }, 1200);
+      });
+    },
+    [acquireShareWakeLock, queueDownloads, releaseShareWakeLock],
+  );
 
   const resolveUrl = useCallback(
     async (rawValue: string, force = false, fromShare = false) => {
@@ -568,6 +592,7 @@ export default function Home() {
       window.clearTimeout(shareCloseRef.current);
       shareCloseRef.current = null;
     }
+    releaseShareWakeLock();
     window.history.replaceState(null, "", window.location.pathname);
     setUrl("");
     setResult(null);
