@@ -41,6 +41,7 @@ export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
   const mediaUrl = requestUrl.searchParams.get("url");
   const requestedName = requestUrl.searchParams.get("name");
+  const inline = requestUrl.searchParams.get("inline") === "1";
 
   if (!mediaUrl || !isAllowedMediaUrl(mediaUrl)) {
     return NextResponse.json({ error: "That media URL is not allowed." }, { status: 400 });
@@ -86,7 +87,7 @@ export async function GET(request: Request) {
 
     const headers = new Headers({
       "Cache-Control": "private, no-store",
-      "Content-Disposition": `attachment; filename="${safeFileName(requestedName, contentType)}"`,
+      "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${safeFileName(requestedName, contentType)}"`,
       "Content-Type": contentType,
       "X-Content-Type-Options": "nosniff",
     });

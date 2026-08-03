@@ -46,6 +46,7 @@ const MAX_CAROUSEL_ITEMS = 20;
 type MediaItem = {
   type: "image" | "video";
   url: string;
+  previewUrl?: string;
   thumbnailUrl?: string;
 };
 
@@ -972,9 +973,15 @@ function readTwitterNumberField(record: string, field: string) {
   return match?.[1] ? Number(match[1]) : 0;
 }
 
-function twitterVideoQualityScore(value: string, bitrate: number) {
+function twitterVideoDimensions(value: string) {
   const resolution = value.match(/\/vid\/(?:[^/]+\/)?(\d{2,5})x(\d{2,5})\//i);
-  const area = resolution ? Number(resolution[1]) * Number(resolution[2]) : 0;
+  if (!resolution) return undefined;
+  return { width: Number(resolution[1]), height: Number(resolution[2]) };
+}
+
+function twitterVideoQualityScore(value: string, bitrate: number) {
+  const dimensions = twitterVideoDimensions(value);
+  const area = dimensions ? dimensions.width * dimensions.height : 0;
   return area * 10_000_000 + bitrate;
 }
 
@@ -1001,6 +1008,7 @@ function extractTwitterMedia(html: string, postId: string) {
     if (sourceType !== "video" && sourceType !== "animated_gif") continue;
 
     let bestVideo: { url: string; score: number } | undefined;
+    let bestPreview: { url: string; score: number } | undefined;
     for (let variantIndex = 0; variantIndex < 24; variantIndex += 1) {
       const variant = readTwitterStreamRecord(
         html,
@@ -1015,12 +1023,23 @@ function extractTwitterMedia(html: string, postId: string) {
       const bitrate = readTwitterNumberField(variant, "bitrate");
       const score = twitterVideoQualityScore(rawUrl, bitrate);
       if (!bestVideo || score > bestVideo.score) bestVideo = { url: rawUrl, score };
+
+      const dimensions = twitterVideoDimensions(rawUrl);
+      if (
+        dimensions &&
+        Math.max(dimensions.width, dimensions.height) <= 1280 &&
+        (!bestPreview || score > bestPreview.score)
+      ) {
+        bestPreview = { url: rawUrl, score };
+      }
     }
 
     if (bestVideo) {
+      const previewUrl = bestPreview?.url ?? bestVideo.url;
       media.push({
         type: "video",
         url: bestVideo.url,
+        ...(previewUrl !== bestVideo.url ? { previewUrl } : {}),
         ...(thumbnailUrl ? { thumbnailUrl } : {}),
       });
     }
