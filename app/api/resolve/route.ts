@@ -1067,7 +1067,7 @@ function extractTwitterMedia(html: string, postId: string) {
       const dimensions = twitterVideoDimensions(rawUrl);
       if (
         dimensions &&
-        Math.max(dimensions.width, dimensions.height) <= 1280 &&
+        Math.max(dimensions.width, dimensions.height) <= 960 &&
         (!bestPreview || score > bestPreview.score)
       ) {
         bestPreview = { url: rawUrl, score };

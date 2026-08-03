@@ -73,7 +73,7 @@ const SUPPORTED_HOSTS = new Set([
   "m.twitter.com",
 ]);
 const AUTO_DOWNLOAD_STORAGE_KEY = "downflow:auto-download";
-const RESOLVE_CACHE_STORAGE_KEY = "downflow:resolve-cache:v1";
+const RESOLVE_CACHE_STORAGE_KEY = "downflow:resolve-cache:v2";
 const RESOLVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const RESOLVE_CACHE_MAX_ENTRIES = 8;
 const ICON_PATHS = {
@@ -1147,26 +1147,106 @@ function VideoPlayer({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const directPreviewUrl = media.previewUrl ?? media.url;
+  const previewAbortRef = useRef<AbortController | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
+  const previewPlayAfterPrepareRef = useRef(false);
+  const previewPreparingRef = useRef(false);
   const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [playbackUrl, setPlaybackUrl] = useState(directPreviewUrl);
   const [previewFailed, setPreviewFailed] = useState(false);
 
+  const prepareLocalPreview = useCallback(async (playAfterPreparing: boolean) => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (playAfterPreparing) previewPlayAfterPrepareRef.current = true;
+
+    if (previewObjectUrlRef.current) {
+      if (previewPlayAfterPrepareRef.current) {
+        previewPlayAfterPrepareRef.current = false;
+        void video.play().catch(() => undefined);
+      }
+      return;
+    }
+    if (previewPreparingRef.current) return;
+
+    previewPreparingRef.current = true;
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+
+    try {
+      const response = await fetch(directPreviewUrl, {
+        cache: "force-cache",
+        credentials: "omit",
+        mode: "cors",
+        signal: controller.signal,
+      });
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!response.ok || !contentType.startsWith("video/")) {
+        throw new Error("The preview source was unavailable.");
+      }
+
+      const blob = await response.blob();
+      if (controller.signal.aborted) return;
+
+      const objectUrl = URL.createObjectURL(blob);
+      previewObjectUrlRef.current = objectUrl;
+      setPlaybackUrl(objectUrl);
+      setPreviewFailed(false);
+      video.src = objectUrl;
+      video.load();
+      if (previewPlayAfterPrepareRef.current) {
+        previewPlayAfterPrepareRef.current = false;
+        void video.play().catch(() => undefined);
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        setPreviewFailed(true);
+      }
+    } finally {
+      if (previewAbortRef.current === controller) previewAbortRef.current = null;
+      previewPreparingRef.current = false;
+    }
+  }, [directPreviewUrl]);
+
   useEffect(() => {
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    previewPlayAfterPrepareRef.current = false;
+    previewPreparingRef.current = false;
+    if (previewObjectUrlRef.current) URL.revokeObjectURL(previewObjectUrlRef.current);
+    previewObjectUrlRef.current = null;
+    setPlaybackUrl(directPreviewUrl);
     setPreviewFailed(false);
     setCurrentTime(0);
     setDuration(0);
     setMuted(false);
-  }, [directPreviewUrl]);
+
+    const fallbackTimeout = autoPlay
+      ? window.setTimeout(() => {
+          if (videoRef.current?.readyState === 0) void prepareLocalPreview(true);
+        }, 1200)
+      : null;
+
+    return () => {
+      if (fallbackTimeout) window.clearTimeout(fallbackTimeout);
+      previewAbortRef.current?.abort();
+      previewAbortRef.current = null;
+      previewPlayAfterPrepareRef.current = false;
+      previewPreparingRef.current = false;
+      if (previewObjectUrlRef.current) URL.revokeObjectURL(previewObjectUrlRef.current);
+      previewObjectUrlRef.current = null;
+    };
+  }, [autoPlay, directPreviewUrl, prepareLocalPreview]);
 
   const togglePlayback = () => {
     const video = videoRef.current;
     if (!video) return;
 
-    if (previewFailed) {
+    if (previewFailed || (video.readyState === 0 && !previewObjectUrlRef.current)) {
       setPreviewFailed(false);
-      video.load();
-      void video.play().catch(() => undefined);
+      void prepareLocalPreview(true);
       return;
     }
 
@@ -1202,7 +1282,7 @@ function VideoPlayer({
         playsInline
         preload="metadata"
         poster={media.thumbnailUrl}
-        src={directPreviewUrl}
+        src={playbackUrl}
         aria-label={`${label}. Tap to play or pause`}
         tabIndex={0}
         onClick={togglePlayback}
@@ -1217,7 +1297,13 @@ function VideoPlayer({
             void event.currentTarget.play().catch(() => undefined);
           }
         }}
-        onError={() => setPreviewFailed(true)}
+        onError={() => {
+          if (!previewObjectUrlRef.current) {
+            void prepareLocalPreview(autoPlay);
+            return;
+          }
+          setPreviewFailed(true);
+        }}
         onLoadedMetadata={(event) => {
           setDuration(event.currentTarget.duration);
           if (event.currentTarget.videoWidth && event.currentTarget.videoHeight) {
