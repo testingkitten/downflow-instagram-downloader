@@ -76,8 +76,6 @@ const ICON_PATHS = {
   check: "M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z",
   download: "M228,144v64a12,12,0,0,1-12,12H40a12,12,0,0,1-12-12V144a12,12,0,0,1,24,0v52H204V144a12,12,0,0,1,24,0Zm-108.49,8.49a12,12,0,0,0,17,0l40-40a12,12,0,0,0-17-17L140,115V32a12,12,0,0,0-24,0v83L96.49,95.51a12,12,0,0,0-17,17Z",
   link: "M165.66,90.34a8,8,0,0,1,0,11.32l-64,64a8,8,0,0,1-11.32-11.32l64-64A8,8,0,0,1,165.66,90.34ZM215.6,40.4a56,56,0,0,0-79.2,0L106.34,70.45a8,8,0,0,0,11.32,11.32l30.06-30a40,40,0,0,1,56.57,56.56l-30.07,30.06a8,8,0,0,0,11.31,11.32L215.6,119.6a56,56,0,0,0,0-79.2ZM138.34,174.22l-30.06,30.06a40,40,0,1,1-56.56-56.57l30.05-30.05a8,8,0,0,0-11.32-11.32L40.4,136.4a56,56,0,0,0,79.2,79.2l30.06-30.07a8,8,0,0,0-11.32-11.31Z",
-  pause: "M96,40V216a12,12,0,0,1-24,0V40a12,12,0,0,1,24,0Zm88-12a12,12,0,0,0-12,12V216a12,12,0,0,0,24,0V40A12,12,0,0,0,184,28Z",
-  play: "M228.61,121.78l-160-96A12,12,0,0,0,50,36.08V219.92a12,12,0,0,0,18.61,10.3l160-96a12,12,0,0,0,0-20.44ZM74,198.72V57.28L191.87,128Z",
   "speaker-high": "M155.51,24.81a8,8,0,0,0-8.42.88L77.25,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V32A8,8,0,0,0,155.51,24.81ZM32,96H72v64H32ZM144,207.64,88,164.09V91.91l56-43.55Zm54-106.08a40,40,0,0,1,0,52.88,8,8,0,0,1-12-10.58,24,24,0,0,0,0-31.72,8,8,0,0,1,12-10.58ZM248,128a79.9,79.9,0,0,1-20.37,53.34,8,8,0,0,1-11.92-10.67,64,64,0,0,0,0-85.33,8,8,0,1,1,11.92-10.67A79.83,79.83,0,0,1,248,128Z",
   "speaker-slash": "M53.92,34.62A8,8,0,1,0,42.08,45.38L73.55,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V175.09l42.08,46.29a8,8,0,1,0,11.84-10.76ZM32,96H72v64H32ZM144,207.64,88,164.09V95.89l56,61.6Zm42-63.77a24,24,0,0,0,0-31.72,8,8,0,1,1,12-10.57,40,40,0,0,1,0,52.88,8,8,0,0,1-12-10.59Zm-80.16-76a8,8,0,0,1,1.4-11.23l39.85-31A8,8,0,0,1,160,32v74.83a8,8,0,0,1-16,0V48.36l-26.94,21A8,8,0,0,1,105.84,67.91ZM248,128a79.9,79.9,0,0,1-20.37,53.34,8,8,0,0,1-11.92-10.67,64,64,0,0,0,0-85.33,8,8,0,1,1,11.92-10.67A79.83,79.83,0,0,1,248,128Z",
   warning: "M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm-8,56a8,8,0,0,1,16,0v56a8,8,0,0,1-16,0Zm8,104a12,12,0,1,1,12-12A12,12,0,0,1,128,184Z",
@@ -1115,10 +1113,9 @@ function VideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const directPreviewUrl = media.previewUrl ?? media.url;
   const fallbackPreviewUrl = getPreviewProxyUrl(media);
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
   const [playbackUrl, setPlaybackUrl] = useState(directPreviewUrl);
   const [usedFallback, setUsedFallback] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -1129,7 +1126,7 @@ function VideoPlayer({
     setPreviewFailed(false);
     setCurrentTime(0);
     setDuration(0);
-    setIsPlaying(false);
+    setMuted(false);
   }, [directPreviewUrl]);
 
   const togglePlayback = () => {
@@ -1145,7 +1142,7 @@ function VideoPlayer({
 
     if (video.paused) {
       setPreviewFailed(false);
-      void video.play().catch(() => setIsPlaying(false));
+      void video.play().catch(() => undefined);
     } else {
       video.pause();
     }
@@ -1175,11 +1172,18 @@ function VideoPlayer({
         preload={autoPlay ? "auto" : "metadata"}
         poster={media.thumbnailUrl}
         src={playbackUrl}
-        aria-label={label}
+        aria-label={`${label}. Tap to play or pause`}
+        tabIndex={0}
         onClick={togglePlayback}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            togglePlayback();
+          }
+        }}
         onCanPlay={(event) => {
           if (autoPlay && event.currentTarget.paused) {
-            void event.currentTarget.play().catch(() => setIsPlaying(false));
+            void event.currentTarget.play().catch(() => undefined);
           }
         }}
         onError={() => {
@@ -1189,7 +1193,6 @@ function VideoPlayer({
             setPreviewFailed(false);
             return;
           }
-          setIsPlaying(false);
           setPreviewFailed(true);
         }}
         onLoadedMetadata={(event) => {
@@ -1201,27 +1204,11 @@ function VideoPlayer({
             });
           }
         }}
-        onPause={() => setIsPlaying(false)}
-        onPlay={() => {
-          setPreviewFailed(false);
-          setIsPlaying(true);
-        }}
+        onPlay={() => setPreviewFailed(false)}
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
         onVolumeChange={(event) => setMuted(event.currentTarget.muted)}
       />
       <div className="cosmos-video-gradient" aria-hidden="true" />
-      <button
-        className={`cosmos-play-button ${isPlaying ? "is-playing" : ""}`}
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          togglePlayback();
-        }}
-        aria-label={isPlaying ? "Pause video" : "Play video"}
-        title={isPlaying ? "Pause" : "Play"}
-      >
-        <Icon name={isPlaying ? "pause" : "play"} size={18} />
-      </button>
       <button
         className="cosmos-mute-button"
         type="button"
