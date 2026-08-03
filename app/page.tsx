@@ -402,7 +402,7 @@ async function readResponseBlob(response: Response, onProgress: DownloadProgress
 
 async function fetchMediaBlob(media: MediaItem, onProgress: DownloadProgressCallback) {
   const directResponse = await fetch(media.url, {
-    cache: "force-cache",
+    cache: "no-store",
     credentials: "omit",
     mode: "cors",
     redirect: "follow",
@@ -639,12 +639,19 @@ export default function Home() {
         anchor.remove();
         window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
         setDownloadMessage("Saved from the source on this device.");
+        markComplete();
+        return true;
       } catch {
         window.open(media.url, "_blank", "noopener,noreferrer");
         setDownloadMessage("The source blocked local saving, so it was opened directly.");
+        setItemDownloadProgress((previous) => {
+          const next = { ...previous };
+          delete next[index];
+          return next;
+        });
+        setDownloadProgress(null);
+        return false;
       }
-
-      markComplete();
     },
     [],
   );
@@ -654,6 +661,7 @@ export default function Home() {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
+      let allSaved = true;
 
       setItemDownloadProgress({});
       setDownloadMessage("Downloads starting.");
@@ -668,11 +676,14 @@ export default function Home() {
       const downloadNext = async (index: number) => {
         if (downloadSequenceRef.current !== sequence || !media[index]) return;
 
-        await downloadMedia(media[index], source, index, media.length, true);
+        const saved = await downloadMedia(media[index], source, index, media.length, true);
         if (downloadSequenceRef.current !== sequence) return;
+        if (!saved) allSaved = false;
 
         if (index === media.length - 1) {
-          setDownloadMessage("Downloads complete.");
+          setDownloadMessage(
+            allSaved ? "Downloads complete." : "Some sources opened directly.",
+          );
           return;
         }
 
@@ -692,6 +703,7 @@ export default function Home() {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
+      let allSaved = true;
 
       setItemDownloadProgress({});
       void acquireShareWakeLock();
@@ -707,14 +719,22 @@ export default function Home() {
       const handoffNext = async (index: number) => {
         if (downloadSequenceRef.current !== sequence || !media[index]) return;
 
-        await downloadMedia(media[index], source, index, media.length, true);
+        const saved = await downloadMedia(media[index], source, index, media.length, true);
         if (downloadSequenceRef.current !== sequence) return;
+        if (!saved) allSaved = false;
 
         const completed = index + 1;
 
         if (completed < media.length) {
           const timeoutId = window.setTimeout(() => void handoffNext(completed), 650);
           pendingDownloadsRef.current.push(timeoutId);
+          return;
+        }
+
+        if (!allSaved) {
+          releaseShareWakeLock();
+          setIsShareLaunch(false);
+          setDownloadMessage("A source opened directly because this browser blocked local saving.");
           return;
         }
 
@@ -1179,7 +1199,7 @@ function VideoPlayer({
 
     try {
       const response = await fetch(directPreviewUrl, {
-        cache: "force-cache",
+        cache: "no-store",
         credentials: "omit",
         mode: "cors",
         signal: controller.signal,
@@ -1380,7 +1400,7 @@ function ResultState({
     source: DownloadSource,
     index: number,
     total: number,
-  ) => void | Promise<void>;
+  ) => Promise<boolean>;
   itemDownloadProgress: Record<number, ItemDownloadProgress>;
 }) {
   const [dimensions, setDimensions] = useState<Record<number, MediaDimensions>>({});
