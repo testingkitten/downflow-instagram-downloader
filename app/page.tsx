@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  CSSProperties,
+  FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 type MediaItem = {
   type: "image" | "video";
@@ -37,6 +44,15 @@ type DownloadProgressState = {
   indeterminate: boolean;
 };
 type DownloadProgressCallback = (loaded: number, total?: number) => void;
+type ItemDownloadProgress = {
+  phase: DownloadPhase;
+  percent: number;
+  indeterminate: boolean;
+};
+type MediaDimensions = {
+  width: number;
+  height: number;
+};
 
 const SUPPORTED_HOSTS = new Set([
   "instagram.com",
@@ -56,6 +72,7 @@ const ICON_PATHS = {
   "arrow-square-out": "M228,104a12,12,0,0,1-24,0V69l-59.51,59.51a12,12,0,0,1-17-17L187,52H152a12,12,0,0,1,0-24h64a12,12,0,0,1,12,12Zm-44,24a12,12,0,0,0-12,12v64H52V84h64a12,12,0,0,0,0-24H48A20,20,0,0,0,28,80V208a20,20,0,0,0,20,20H176a20,20,0,0,0,20-20V140A12,12,0,0,0,184,128Z",
   "arrow-up-right": "M204,64V168a12,12,0,0,1-24,0V93L72.49,200.49a12,12,0,0,1-17-17L163,76H88a12,12,0,0,1,0-24H192A12,12,0,0,1,204,64Z",
   clipboard: "M168,152a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,152Zm-8-40H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16Zm56-64V216a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V48A16,16,0,0,1,56,32H92.26a47.92,47.92,0,0,1,71.48,0H200A16,16,0,0,1,216,48ZM96,64h64a32,32,0,0,0-64,0ZM200,48H173.25A47.93,47.93,0,0,1,176,64v8a8,8,0,0,1-8,8H88a8,8,0,0,1-8-8V64a47.93,47.93,0,0,1,2.75-16H56V216H200Z",
+  check: "M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z",
   download: "M228,144v64a12,12,0,0,1-12,12H40a12,12,0,0,1-12-12V144a12,12,0,0,1,24,0v52H204V144a12,12,0,0,1,24,0Zm-108.49,8.49a12,12,0,0,0,17,0l40-40a12,12,0,0,0-17-17L140,115V32a12,12,0,0,0-24,0v83L96.49,95.51a12,12,0,0,0-17,17Z",
   link: "M165.66,90.34a8,8,0,0,1,0,11.32l-64,64a8,8,0,0,1-11.32-11.32l64-64A8,8,0,0,1,165.66,90.34ZM215.6,40.4a56,56,0,0,0-79.2,0L106.34,70.45a8,8,0,0,0,11.32,11.32l30.06-30a40,40,0,0,1,56.57,56.56l-30.07,30.06a8,8,0,0,0,11.31,11.32L215.6,119.6a56,56,0,0,0,0-79.2ZM138.34,174.22l-30.06,30.06a40,40,0,1,1-56.56-56.57l30.05-30.05a8,8,0,0,0-11.32-11.32L40.4,136.4a56,56,0,0,0,79.2,79.2l30.06-30.07a8,8,0,0,0-11.32-11.31Z",
   "speaker-high": "M155.51,24.81a8,8,0,0,0-8.42.88L77.25,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V32A8,8,0,0,0,155.51,24.81ZM32,96H72v64H32ZM144,207.64,88,164.09V91.91l56-43.55Zm54-106.08a40,40,0,0,1,0,52.88,8,8,0,0,1-12-10.58,24,24,0,0,0,0-31.72,8,8,0,0,1,12-10.58ZM248,128a79.9,79.9,0,0,1-20.37,53.34,8,8,0,0,1-11.92-10.67,64,64,0,0,0,0-85.33,8,8,0,1,1,11.92-10.67A79.83,79.83,0,0,1,248,128Z",
@@ -85,6 +102,42 @@ function Icon({
       <path d={ICON_PATHS[name]} fill="currentColor" />
     </svg>
   );
+}
+
+function PlatformMark({ platform }: { platform: ResolveResult["platform"] | null }) {
+  if (platform === "instagram") {
+    return (
+      <svg aria-hidden="true" className="platform-mark" focusable="false" viewBox="0 0 24 24">
+        <rect x="3.25" y="3.25" width="17.5" height="17.5" rx="5.25" />
+        <circle cx="12" cy="12" r="4.15" />
+        <circle className="platform-mark-dot" cx="17.5" cy="6.7" r="1.05" />
+      </svg>
+    );
+  }
+
+  if (platform === "twitter") {
+    return (
+      <svg aria-hidden="true" className="platform-mark platform-mark-x" focusable="false" viewBox="0 0 24 24">
+        <path d="M5 4.5h3.85l3.75 5.02 4.54-5.02H19l-5.56 6.16L19.5 19.5h-3.86l-4.08-5.58-5.03 5.58H4.68l6.03-6.72L5 4.5Zm3.02 1.35H6.96l9.36 12.3h1.08L8.02 5.85Z" />
+      </svg>
+    );
+  }
+
+  return <Icon className="field-icon" name="link" size={18} />;
+}
+
+function detectPlatform(value: string): ResolveResult["platform"] | null {
+  const normalized = normalizeSharedMediaUrl(value);
+  if (!normalized) return null;
+
+  try {
+    const hostname = new URL(normalized).hostname.toLowerCase();
+    return hostname.includes("instagram") || hostname.includes("instagr.am")
+      ? "instagram"
+      : "twitter";
+  } catch {
+    return null;
+  }
 }
 
 function normalizeMediaUrl(value: string) {
@@ -131,6 +184,44 @@ function labelForKind(kind: string) {
   if (kind === "video") return "video";
   if (kind === "story") return "story";
   return "post";
+}
+
+function getGridShape(count: number, mobile = false) {
+  if (count <= 1) return { columns: 1, rows: 1 };
+
+  const columns = mobile
+    ? count <= 12
+      ? 2
+      : count <= 18
+        ? 3
+        : 4
+    : count === 4
+      ? 2
+      : count <= 3
+        ? count
+        : count <= 6
+          ? 3
+          : count <= 12
+            ? 4
+            : 5;
+
+  return { columns, rows: Math.ceil(count / columns) };
+}
+
+function getQualityLabel(media: MediaItem, dimensions?: MediaDimensions) {
+  const format = media.type === "video" ? "MP4" : "PNG";
+  if (!dimensions?.width || !dimensions.height) {
+    return media.type === "video" ? `Highest · ${format}` : `Original · ${format}`;
+  }
+
+  return `${dimensions.width}×${dimensions.height} · ${format}`;
+}
+
+function getDownloadLabel(progress: DownloadProgressState | null) {
+  if (!progress) return "Download all";
+  if (progress.phase === "complete") return `Saved ${progress.total} / ${progress.total}`;
+  if (progress.phase === "preparing") return `Preparing ${progress.current} / ${progress.total}`;
+  return `Downloading ${progress.current} / ${progress.total}`;
 }
 
 function sanitizeFilePart(value: string) {
@@ -310,6 +401,9 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState("");
   const [downloadMessage, setDownloadMessage] = useState("");
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressState | null>(null);
+  const [itemDownloadProgress, setItemDownloadProgress] = useState<
+    Record<number, ItemDownloadProgress>
+  >({});
   const [pasteState, setPasteState] = useState<"idle" | "pasting">("idle");
   const [autoDownloadEnabled, setAutoDownloadEnabled] = useState(false);
   const [autoDownloadPreferenceReady, setAutoDownloadPreferenceReady] = useState(false);
@@ -392,23 +486,35 @@ export default function Home() {
   }, [acquireShareWakeLock, isShareLaunch, shareDownloadComplete]);
 
   const downloadMedia = useCallback(
-    async (media: MediaItem, source: DownloadSource, index: number, total: number) => {
+    async (
+      media: MediaItem,
+      source: DownloadSource,
+      index: number,
+      total: number,
+      isBatch = false,
+    ) => {
       const baseName = getDownloadBaseName(source);
+      const progressIndex = isBatch ? index : 0;
+      const progressTotal = isBatch ? total : 1;
       if (progressResetRef.current) {
         window.clearTimeout(progressResetRef.current);
         progressResetRef.current = null;
       }
 
       const markComplete = () => {
+        setItemDownloadProgress((previous) => ({
+          ...previous,
+          [index]: { phase: "complete", percent: 100, indeterminate: false },
+        }));
         setDownloadProgress({
-          current: index + 1,
-          total,
-          percent: ((index + 1) / total) * 100,
-          phase: "complete",
+          current: progressIndex + 1,
+          total: progressTotal,
+          percent: ((progressIndex + 1) / progressTotal) * 100,
+          phase: isBatch && index < total - 1 ? "downloading" : "complete",
           indeterminate: false,
         });
 
-        if (index === total - 1) {
+        if (!isBatch || index === total - 1) {
           progressResetRef.current = window.setTimeout(() => {
             setDownloadProgress(null);
             progressResetRef.current = null;
@@ -416,10 +522,14 @@ export default function Home() {
         }
       };
 
+      setItemDownloadProgress((previous) => ({
+        ...previous,
+        [index]: { phase: "downloading", percent: 0, indeterminate: true },
+      }));
       setDownloadProgress({
-        current: index + 1,
-        total,
-        percent: (index / total) * 100,
+        current: progressIndex + 1,
+        total: progressTotal,
+        percent: (progressIndex / progressTotal) * 100,
         phase: "downloading",
         indeterminate: true,
       });
@@ -437,19 +547,34 @@ export default function Home() {
           baseName,
           (loaded, bytesTotal) => {
             const fraction = bytesTotal ? Math.min(loaded / bytesTotal, 1) : 0.12;
+            setItemDownloadProgress((previous) => ({
+              ...previous,
+              [index]: {
+                phase: "downloading",
+                percent: Math.min(99, fraction * 100),
+                indeterminate: !bytesTotal,
+              },
+            }));
             setDownloadProgress({
-              current: index + 1,
-              total,
-              percent: Math.min(99, ((index + fraction) / total) * 100),
+              current: progressIndex + 1,
+              total: progressTotal,
+              percent: Math.min(99, ((progressIndex + fraction) / progressTotal) * 100),
               phase: "downloading",
               indeterminate: !bytesTotal,
             });
           },
           () => {
+            setItemDownloadProgress((previous) => ({
+              ...previous,
+              [index]: { phase: "preparing", percent: 94, indeterminate: false },
+            }));
             setDownloadProgress((previous) => ({
-              current: index + 1,
-              total,
-              percent: Math.max(previous?.percent ?? 0, ((index + 0.94) / total) * 100),
+              current: progressIndex + 1,
+              total: progressTotal,
+              percent: Math.max(
+                previous?.percent ?? 0,
+                ((progressIndex + 0.94) / progressTotal) * 100,
+              ),
               phase: "preparing",
               indeterminate: false,
             }));
@@ -480,6 +605,7 @@ export default function Home() {
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
 
+      setItemDownloadProgress({});
       setDownloadMessage("Downloads starting.");
       setDownloadProgress({
         current: 1,
@@ -492,7 +618,7 @@ export default function Home() {
       const downloadNext = async (index: number) => {
         if (downloadSequenceRef.current !== sequence || !media[index]) return;
 
-        await downloadMedia(media[index], source, index, media.length);
+        await downloadMedia(media[index], source, index, media.length, true);
         if (downloadSequenceRef.current !== sequence) return;
 
         if (index === media.length - 1) {
@@ -517,6 +643,7 @@ export default function Home() {
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
 
+      setItemDownloadProgress({});
       void acquireShareWakeLock();
       setDownloadMessage("Sending downloads to Chrome.");
       setDownloadProgress({
@@ -532,6 +659,10 @@ export default function Home() {
 
         startBrowserDownload(media[index], source);
         const completed = index + 1;
+        setItemDownloadProgress((previous) => ({
+          ...previous,
+          [index]: { phase: "complete", percent: 100, indeterminate: false },
+        }));
         setDownloadProgress({
           current: completed,
           total: media.length,
@@ -572,7 +703,7 @@ export default function Home() {
       if (!normalized) {
         if (force) {
           setViewState("error");
-          setErrorMessage("Paste a full Instagram or X post link.");
+          setErrorMessage("Use an Instagram or X link.");
         }
         return;
       }
@@ -594,6 +725,7 @@ export default function Home() {
       setErrorMessage("");
       setDownloadMessage("");
       setDownloadProgress(null);
+      setItemDownloadProgress({});
       setShareDownloadComplete(false);
       if (!fromShare) setIsShareLaunch(false);
       setViewState("loading");
@@ -651,7 +783,7 @@ export default function Home() {
     void resolveUrl(url, true);
   };
 
-  const handlePaste = async () => {
+  const handlePaste = useCallback(async () => {
     setPasteState("pasting");
     setErrorMessage("");
     try {
@@ -665,7 +797,7 @@ export default function Home() {
     } finally {
       setPasteState("idle");
     }
-  };
+  }, [resolveUrl]);
 
   const downloadAllMedia = useCallback(
     (media: MediaItem[], source: DownloadSource) => {
@@ -674,7 +806,7 @@ export default function Home() {
     [queueDownloads],
   );
 
-  const clearAll = () => {
+  const clearAll = useCallback(() => {
     requestRef.current?.abort();
     downloadSequenceRef.current += 1;
     lastLookupRef.current = "";
@@ -696,11 +828,12 @@ export default function Home() {
     setErrorMessage("");
     setDownloadMessage("");
     setDownloadProgress(null);
+    setItemDownloadProgress({});
     setShareDownloadComplete(false);
     setIsShareLaunch(false);
     setViewState("idle");
     inputRef.current?.focus();
-  };
+  }, [releaseShareWakeLock]);
 
   const toggleAutoDownload = () => {
     setAutoDownloadEnabled((previous) => {
@@ -714,8 +847,61 @@ export default function Home() {
     });
   };
 
+  useEffect(() => {
+    const handleKeyboardShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isEditing =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        Boolean(target?.isContentEditable);
+      const key = event.key.toLowerCase();
+
+      if (event.key === "Escape") {
+        if (document.querySelector(".media-lightbox")) return;
+        if (url || viewState !== "idle") clearAll();
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && key === "v" && !isEditing) {
+        event.preventDefault();
+        void handlePaste();
+        return;
+      }
+
+      if (
+        key === "d" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isEditing &&
+        downloadProgress?.phase !== "downloading" &&
+        downloadProgress?.phase !== "preparing" &&
+        result?.status === "ready" &&
+        result.media.length
+      ) {
+        event.preventDefault();
+        downloadAllMedia(result.media, result);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyboardShortcut);
+    return () => window.removeEventListener("keydown", handleKeyboardShortcut);
+  }, [clearAll, downloadAllMedia, downloadProgress?.phase, handlePaste, result, url, viewState]);
+
+  const detectedPlatform = result?.platform ?? detectPlatform(url);
+  const hasWorkspace = ["loading", "success", "embed-only"].includes(viewState);
+  const isDownloading =
+    downloadProgress?.phase === "downloading" || downloadProgress?.phase === "preparing";
+  const sourceName = result?.sourceUsername
+    ? `@${result.sourceUsername.replace(/^@/, "")}`
+    : result?.platform === "twitter"
+      ? "X"
+      : "Instagram";
+
   return (
-    <main className={`site-frame ${isShareLaunch ? "is-share-launch" : ""}`}>
+    <main
+      className={`site-frame is-${viewState} ${hasWorkspace ? "has-workspace" : "is-idle-layout"} ${isShareLaunch ? "is-share-launch" : ""}`}
+    >
       <nav className="topbar" aria-label="Primary">
         <button
           className="refresh-button"
@@ -752,8 +938,12 @@ export default function Home() {
               <label className="sr-only" htmlFor="instagram-url">
                 Instagram or X link
               </label>
-              <div className={`url-field ${viewState === "error" ? "has-error" : ""}`}>
-                <Icon className="field-icon" name="link" size={19} />
+              <div
+                className={`url-field ${viewState === "error" ? "has-error" : ""} ${detectedPlatform ? `is-${detectedPlatform}` : ""}`}
+              >
+                <span className="field-platform" aria-hidden="true">
+                  <PlatformMark platform={detectedPlatform} />
+                </span>
                 <input
                   id="instagram-url"
                   ref={inputRef}
@@ -761,15 +951,23 @@ export default function Home() {
                   value={url}
                   onChange={(event) => {
                     const nextValue = event.target.value;
+                    requestRef.current?.abort();
+                    downloadSequenceRef.current += 1;
+                    pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+                    pendingDownloadsRef.current = [];
                     setUrl(nextValue);
+                    setResult(null);
                     setErrorMessage("");
+                    setDownloadProgress(null);
+                    setItemDownloadProgress({});
                     setViewState("idle");
                     queueLookup(nextValue);
                   }}
-                  placeholder="Paste an Instagram or X link"
+                  placeholder="Paste link"
                   autoComplete="url"
                   spellCheck={false}
                   aria-invalid={viewState === "error"}
+                  aria-keyshortcuts="Control+V Meta+V"
                 />
                 {url ? (
                   <button className="clear-button" type="button" onClick={clearAll} aria-label="Clear link">
@@ -799,31 +997,46 @@ export default function Home() {
       </section>
 
       <section
-        className={`workspace-section ${viewState === "idle" ? "is-empty" : ""}`}
+        className={`workspace-section ${hasWorkspace ? "" : "is-empty"}`}
         aria-live="polite"
       >
-        {downloadProgress ? <DownloadProgressBar progress={downloadProgress} /> : null}
         {result?.media.length ? (
           <div className="workspace-tools">
-            <span className="workspace-label">{result.media.length} media</span>
-            <button
-              className="download-all-button"
-              type="button"
-              onClick={() => downloadAllMedia(result.media, result)}
-              aria-label="Download all media"
-              title="Download all"
-            >
-              <Icon name="download" size={17} />
-              <span>Download all</span>
-            </button>
+            <span className="workspace-label">
+              <span>{sourceName}</span>
+              <span aria-hidden="true">·</span>
+              <span>{result.media.length} {result.media.length === 1 ? "item" : "items"}</span>
+            </span>
+            <span className="workspace-kind">{labelForKind(result.kind)}</span>
           </div>
         ) : null}
 
         {viewState === "loading" ? <LoadingState /> : null}
         {viewState === "success" && result ? (
-          <ResultState result={result} onDownload={downloadMedia} />
+          <ResultState
+            result={result}
+            onDownload={downloadMedia}
+            itemDownloadProgress={itemDownloadProgress}
+          />
         ) : null}
         {viewState === "embed-only" && result ? <EmbedOnlyState result={result} /> : null}
+        {result?.media.length ? (
+          <div className={`download-dock ${downloadProgress ? "is-active" : ""}`}>
+            <button
+              className="download-all-button"
+              type="button"
+              onClick={() => downloadAllMedia(result.media, result)}
+              aria-label="Download all media"
+              aria-keyshortcuts="D"
+              title="Download all"
+              disabled={isDownloading}
+            >
+              <Icon name={downloadProgress?.phase === "complete" ? "check" : "download"} size={17} />
+              <span>{getDownloadLabel(downloadProgress)}</span>
+            </button>
+            {downloadProgress ? <DownloadProgressBar progress={downloadProgress} /> : null}
+          </div>
+        ) : null}
         {shareDownloadComplete ? (
           <p className="share-complete-note" role="status">
             Saved — return to {result?.platform === "twitter" ? "X" : "Instagram"}.
@@ -859,10 +1072,7 @@ function DownloadProgressBar({ progress }: { progress: DownloadProgressState }) 
       role="status"
       aria-label={`${label} media ${progress.current} of ${progress.total}`}
     >
-      <div className="download-progress-meta">
-        <span>{label}</span>
-        <span>{progress.current} / {progress.total}</span>
-      </div>
+      <span className="sr-only">{label} media {progress.current} of {progress.total}</span>
       <div className="download-progress-track">
         <span
           className={progress.indeterminate ? "is-indeterminate" : ""}
@@ -877,10 +1087,12 @@ function VideoPlayer({
   media,
   label,
   autoPlay,
+  onMetadata,
 }: {
   media: MediaItem;
   label: string;
   autoPlay: boolean;
+  onMetadata?: (dimensions: MediaDimensions) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [muted, setMuted] = useState(true);
@@ -919,12 +1131,20 @@ function VideoPlayer({
         loop
         muted={muted}
         playsInline
-        preload={autoPlay ? "metadata" : "none"}
+        preload="metadata"
         poster={media.thumbnailUrl}
         src={media.url}
         aria-label={label}
         onClick={togglePlayback}
-        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+        onLoadedMetadata={(event) => {
+          setDuration(event.currentTarget.duration);
+          if (event.currentTarget.videoWidth && event.currentTarget.videoHeight) {
+            onMetadata?.({
+              width: event.currentTarget.videoWidth,
+              height: event.currentTarget.videoHeight,
+            });
+          }
+        }}
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
         onVolumeChange={(event) => setMuted(event.currentTarget.muted)}
       />
@@ -968,60 +1188,195 @@ function VideoPlayer({
 function ResultState({
   result,
   onDownload,
+  itemDownloadProgress,
 }: {
   result: ResolveResult;
-  onDownload: (media: MediaItem, source: DownloadSource, index: number, total: number) => void;
+  onDownload: (
+    media: MediaItem,
+    source: DownloadSource,
+    index: number,
+    total: number,
+  ) => void | Promise<void>;
+  itemDownloadProgress: Record<number, ItemDownloadProgress>;
 }) {
+  const [dimensions, setDimensions] = useState<Record<number, MediaDimensions>>({});
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const desktopShape = getGridShape(result.media.length);
+  const mobileShape = getGridShape(result.media.length, true);
+  const gridStyle = {
+    "--media-columns": desktopShape.columns,
+    "--media-rows": desktopShape.rows,
+    "--media-columns-mobile": mobileShape.columns,
+    "--media-rows-mobile": mobileShape.rows,
+  } as CSSProperties;
+
+  const recordDimensions = (index: number, nextDimensions: MediaDimensions) => {
+    setDimensions((previous) => {
+      const current = previous[index];
+      if (
+        current?.width === nextDimensions.width &&
+        current?.height === nextDimensions.height
+      ) {
+        return previous;
+      }
+      return { ...previous, [index]: nextDimensions };
+    });
+  };
+
   return (
     <div className="result-state">
       <div
         className={`media-grid ${result.media.length === 1 ? "single-media" : "multi-media"}`}
         aria-label={`${result.media.length} ${result.platform === "twitter" ? "X" : "Instagram"} media items`}
+        data-density={result.media.length > 12 ? "very-dense" : result.media.length > 8 ? "dense" : "standard"}
+        style={gridStyle}
       >
-        {result.media.map((media, index) => (
-          <article className="media-card" key={`${media.url}-${index}`}>
-            <div className="media-frame">
-              {media.type === "video" ? (
-                <VideoPlayer
-                  media={media}
-                  label={`${labelForKind(result.kind)} video ${index + 1}`}
-                  autoPlay={result.media.length === 1}
-                />
-              ) : (
-                <img
-                  src={media.url}
-                  alt={`${labelForKind(result.kind)} image ${index + 1}`}
-                  loading={index === 0 ? "eager" : "lazy"}
-                  decoding="async"
-                  draggable={false}
-                />
-              )}
-              <div className={`media-actions ${media.type === "video" ? "video-actions" : ""}`}>
+        {result.media.map((media, index) => {
+          const itemProgress = itemDownloadProgress[index];
+          const itemNumber = String(index + 1).padStart(2, "0");
+          const itemTotal = String(result.media.length).padStart(2, "0");
+
+          return (
+            <article
+              className={`media-card ${media.type === "video" ? "is-video" : "is-image"}`}
+              data-download-phase={itemProgress?.phase ?? "idle"}
+              key={`${media.url}-${index}`}
+            >
+              <div className="media-frame">
                 {media.type === "video" ? (
-                  <a
-                    className="media-player"
-                    href={media.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label="Open video in a new tab"
-                    title="Open in new tab"
+                  <VideoPlayer
+                    media={media}
+                    label={`${labelForKind(result.kind)} video ${index + 1}`}
+                    autoPlay={result.media.length === 1}
+                    onMetadata={(nextDimensions) => recordDimensions(index, nextDimensions)}
+                  />
+                ) : (
+                  <button
+                    className="image-preview-trigger"
+                    type="button"
+                    onClick={() => setPreviewIndex(index)}
+                    aria-label={`View image ${index + 1} full screen`}
+                    title="View full screen"
                   >
-                    <Icon name="arrow-square-out" size={17} />
-                  </a>
+                    <img
+                      src={media.url}
+                      alt={`${labelForKind(result.kind)} image ${index + 1}`}
+                      loading={index === 0 ? "eager" : "lazy"}
+                      decoding="async"
+                      draggable={false}
+                      onLoad={(event) =>
+                        recordDimensions(index, {
+                          width: event.currentTarget.naturalWidth,
+                          height: event.currentTarget.naturalHeight,
+                        })
+                      }
+                    />
+                  </button>
+                )}
+
+                <span className="media-index" aria-hidden="true">
+                  {itemNumber} / {itemTotal}
+                </span>
+                <span className="media-quality">
+                  {getQualityLabel(media, dimensions[index])}
+                </span>
+
+                {itemProgress ? (
+                  <span
+                    className={`item-download-state is-${itemProgress.phase} ${itemProgress.indeterminate ? "is-indeterminate" : ""}`}
+                    style={{ "--item-progress": `${itemProgress.percent}%` } as CSSProperties}
+                    role="status"
+                    aria-label={`${itemProgress.phase} ${media.type} ${index + 1}`}
+                  >
+                    <span className="item-download-core">
+                      {itemProgress.phase === "complete" ? <Icon name="check" size={13} /> : null}
+                    </span>
+                  </span>
                 ) : null}
-                <button
-                  className="media-download"
-                  type="button"
-                  onClick={() => onDownload(media, result, index, result.media.length)}
-                  aria-label={`Download ${media.type} ${index + 1}`}
-                  title={`Download ${media.type}`}
-                >
-                  <Icon name="download" size={17} />
-                </button>
+
+                <div className="media-actions">
+                  {media.type === "video" ? (
+                    <a
+                      className="media-player"
+                      href={media.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label="Open video in a new tab"
+                      title="Open in new tab"
+                    >
+                      <Icon name="arrow-square-out" size={16} />
+                    </a>
+                  ) : null}
+                  <button
+                    className="media-download"
+                    type="button"
+                    onClick={() => void onDownload(media, result, index, result.media.length)}
+                    aria-label={`Download ${media.type} ${index + 1}`}
+                    title={`Download ${media.type}`}
+                    disabled={itemProgress?.phase === "downloading" || itemProgress?.phase === "preparing"}
+                  >
+                    <Icon name={itemProgress?.phase === "complete" ? "check" : "download"} size={16} />
+                  </button>
+                </div>
               </div>
-            </div>
-          </article>
-        ))}
+            </article>
+          );
+        })}
+      </div>
+      {previewIndex !== null && result.media[previewIndex]?.type === "image" ? (
+        <MediaLightbox
+          media={result.media[previewIndex]}
+          label={`${labelForKind(result.kind)} image ${previewIndex + 1}`}
+          onClose={() => setPreviewIndex(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function MediaLightbox({
+  media,
+  label,
+  onClose,
+}: {
+  media: MediaItem;
+  label: string;
+  onClose: () => void;
+}) {
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [onClose]);
+
+  return (
+    <div
+      className="media-lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="lightbox-surface">
+        <img src={media.url} alt={label} decoding="async" />
+        <button
+          ref={closeButtonRef}
+          className="lightbox-close"
+          type="button"
+          onClick={onClose}
+          aria-label="Close full screen preview"
+          title="Close"
+        >
+          <Icon name="x" size={18} />
+        </button>
       </div>
     </div>
   );
