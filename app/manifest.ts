@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Download images",
     short_name: "Download images",
-    description: "Save public Instagram images and videos.",
+    description: "Save public Instagram and X images and videos.",
     start_url: "/",
     scope: "/",
     display: "standalone",

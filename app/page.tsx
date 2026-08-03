@@ -1,17 +1,5 @@
 "use client";
 
-import {
-  ArrowSquareOut,
-  ArrowClockwise,
-  ArrowUpRight,
-  ClipboardText,
-  DownloadSimple,
-  LinkSimple,
-  SpeakerHigh,
-  SpeakerSlash,
-  WarningCircle,
-  X,
-} from "@phosphor-icons/react";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 type MediaItem = {
@@ -23,6 +11,7 @@ type MediaItem = {
 type ResolveResult = {
   ok: boolean;
   status: "ready" | "embed-only";
+  platform: "instagram" | "twitter";
   kind: string;
   canonicalUrl: string;
   embedUrl: string;
@@ -34,7 +23,10 @@ type ResolveResult = {
   message?: string;
 };
 
-type DownloadSource = Pick<ResolveResult, "canonicalUrl" | "sourceUsername" | "sourceId">;
+type DownloadSource = Pick<
+  ResolveResult,
+  "canonicalUrl" | "platform" | "sourceUsername" | "sourceId"
+>;
 type ViewState = "idle" | "loading" | "success" | "embed-only" | "error";
 type DownloadPhase = "downloading" | "preparing" | "complete";
 type DownloadProgressState = {
@@ -46,46 +38,89 @@ type DownloadProgressState = {
 };
 type DownloadProgressCallback = (loaded: number, total?: number) => void;
 
-const INSTAGRAM_HOSTS = new Set([
+const SUPPORTED_HOSTS = new Set([
   "instagram.com",
   "www.instagram.com",
   "instagr.am",
   "www.instagr.am",
+  "x.com",
+  "www.x.com",
+  "twitter.com",
+  "www.twitter.com",
+  "mobile.twitter.com",
+  "m.twitter.com",
 ]);
 const AUTO_DOWNLOAD_STORAGE_KEY = "downflow:auto-download";
+const ICON_PATHS = {
+  "arrow-clockwise": "M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z",
+  "arrow-square-out": "M228,104a12,12,0,0,1-24,0V69l-59.51,59.51a12,12,0,0,1-17-17L187,52H152a12,12,0,0,1,0-24h64a12,12,0,0,1,12,12Zm-44,24a12,12,0,0,0-12,12v64H52V84h64a12,12,0,0,0,0-24H48A20,20,0,0,0,28,80V208a20,20,0,0,0,20,20H176a20,20,0,0,0,20-20V140A12,12,0,0,0,184,128Z",
+  "arrow-up-right": "M204,64V168a12,12,0,0,1-24,0V93L72.49,200.49a12,12,0,0,1-17-17L163,76H88a12,12,0,0,1,0-24H192A12,12,0,0,1,204,64Z",
+  clipboard: "M168,152a8,8,0,0,1-8,8H96a8,8,0,0,1,0-16h64A8,8,0,0,1,168,152Zm-8-40H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16Zm56-64V216a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V48A16,16,0,0,1,56,32H92.26a47.92,47.92,0,0,1,71.48,0H200A16,16,0,0,1,216,48ZM96,64h64a32,32,0,0,0-64,0ZM200,48H173.25A47.93,47.93,0,0,1,176,64v8a8,8,0,0,1-8,8H88a8,8,0,0,1-8-8V64a47.93,47.93,0,0,1,2.75-16H56V216H200Z",
+  download: "M228,144v64a12,12,0,0,1-12,12H40a12,12,0,0,1-12-12V144a12,12,0,0,1,24,0v52H204V144a12,12,0,0,1,24,0Zm-108.49,8.49a12,12,0,0,0,17,0l40-40a12,12,0,0,0-17-17L140,115V32a12,12,0,0,0-24,0v83L96.49,95.51a12,12,0,0,0-17,17Z",
+  link: "M165.66,90.34a8,8,0,0,1,0,11.32l-64,64a8,8,0,0,1-11.32-11.32l64-64A8,8,0,0,1,165.66,90.34ZM215.6,40.4a56,56,0,0,0-79.2,0L106.34,70.45a8,8,0,0,0,11.32,11.32l30.06-30a40,40,0,0,1,56.57,56.56l-30.07,30.06a8,8,0,0,0,11.31,11.32L215.6,119.6a56,56,0,0,0,0-79.2ZM138.34,174.22l-30.06,30.06a40,40,0,1,1-56.56-56.57l30.05-30.05a8,8,0,0,0-11.32-11.32L40.4,136.4a56,56,0,0,0,79.2,79.2l30.06-30.07a8,8,0,0,0-11.32-11.31Z",
+  "speaker-high": "M155.51,24.81a8,8,0,0,0-8.42.88L77.25,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V32A8,8,0,0,0,155.51,24.81ZM32,96H72v64H32ZM144,207.64,88,164.09V91.91l56-43.55Zm54-106.08a40,40,0,0,1,0,52.88,8,8,0,0,1-12-10.58,24,24,0,0,0,0-31.72,8,8,0,0,1,12-10.58ZM248,128a79.9,79.9,0,0,1-20.37,53.34,8,8,0,0,1-11.92-10.67,64,64,0,0,0,0-85.33,8,8,0,1,1,11.92-10.67A79.83,79.83,0,0,1,248,128Z",
+  "speaker-slash": "M53.92,34.62A8,8,0,1,0,42.08,45.38L73.55,80H32A16,16,0,0,0,16,96v64a16,16,0,0,0,16,16H77.25l69.84,54.31A8,8,0,0,0,160,224V175.09l42.08,46.29a8,8,0,1,0,11.84-10.76ZM32,96H72v64H32ZM144,207.64,88,164.09V95.89l56,61.6Zm42-63.77a24,24,0,0,0,0-31.72,8,8,0,1,1,12-10.57,40,40,0,0,1,0,52.88,8,8,0,0,1-12-10.59Zm-80.16-76a8,8,0,0,1,1.4-11.23l39.85-31A8,8,0,0,1,160,32v74.83a8,8,0,0,1-16,0V48.36l-26.94,21A8,8,0,0,1,105.84,67.91ZM248,128a79.9,79.9,0,0,1-20.37,53.34,8,8,0,0,1-11.92-10.67,64,64,0,0,0,0-85.33,8,8,0,1,1,11.92-10.67A79.83,79.83,0,0,1,248,128Z",
+  warning: "M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm-8,56a8,8,0,0,1,16,0v56a8,8,0,0,1-16,0Zm8,104a12,12,0,1,1,12-12A12,12,0,0,1,128,184Z",
+  x: "M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z",
+} as const;
 
-function normalizeInstagramUrl(value: string) {
+function Icon({
+  name,
+  size = 18,
+  className,
+}: {
+  name: keyof typeof ICON_PATHS;
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={className}
+      focusable="false"
+      height={size}
+      viewBox="0 0 256 256"
+      width={size}
+    >
+      <path d={ICON_PATHS[name]} fill="currentColor" />
+    </svg>
+  );
+}
+
+function normalizeMediaUrl(value: string) {
   try {
     const parsed = new URL(value.trim());
-    if (!INSTAGRAM_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+    if (!SUPPORTED_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    parsed.protocol = "https:";
     return parsed.toString();
   } catch {
     return null;
   }
 }
 
-function normalizeSharedInstagramUrl(value: string | null) {
+function normalizeSharedMediaUrl(value: string | null) {
   if (!value?.trim()) return null;
 
   try {
     const parsed = new URL(value.trim());
     const redirectedUrl = parsed.searchParams.get("u");
-    if (redirectedUrl) return normalizeSharedInstagramUrl(redirectedUrl);
+    if (redirectedUrl) return normalizeSharedMediaUrl(redirectedUrl);
   } catch {
     // Shared text often contains a URL alongside other words.
   }
 
   const match = value.match(
-    /https?:\/\/(?:www\.)?(?:instagram\.com|instagr\.am)\/[^\s<>"']+/i,
+    /https?:\/\/(?:www\.|mobile\.|m\.)?(?:instagram\.com|instagr\.am|x\.com|twitter\.com)\/[^\s<>"']+/i,
   );
   const candidate = (match?.[0] ?? value).replace(/[),.;!?]+$/g, "");
-  return normalizeInstagramUrl(candidate);
+  return normalizeMediaUrl(candidate);
 }
 
-function getSharedInstagramUrl() {
+function getSharedMediaUrl() {
   const params = new URLSearchParams(window.location.search);
   for (const value of [params.get("url"), params.get("text"), params.get("title")]) {
-    const normalized = normalizeSharedInstagramUrl(value);
+    const normalized = normalizeSharedMediaUrl(value);
     if (normalized) return normalized;
   }
   return null;
@@ -103,7 +138,7 @@ function sanitizeFilePart(value: string) {
     value
       .replace(/[^a-z0-9._-]+/gi, "-")
       .replace(/^-+|-+$/g, "")
-      .slice(0, 64) || "instagram"
+      .slice(0, 64) || "media"
   );
 }
 
@@ -131,19 +166,24 @@ function getSourceIdentity(source: DownloadSource) {
   }
 
   const markerIndex = segments.findIndex((segment) =>
-    ["p", "reel", "tv", "stories"].includes(segment),
+    ["p", "reel", "tv", "stories", "status", "statuses"].includes(segment),
   );
   const marker = segments[markerIndex];
+  const fallbackSource = source.platform === "twitter" ? "x" : "instagram";
   const fallbackUsername =
     marker === "stories"
       ? segments[markerIndex + 1]
+      : ["status", "statuses"].includes(marker)
+        ? ["i", "web"].includes((segments[markerIndex - 1] ?? "").toLowerCase())
+          ? fallbackSource
+          : segments[markerIndex - 1]
       : markerIndex > 0
         ? segments[markerIndex - 1]
-        : "instagram";
+        : fallbackSource;
   const fallbackId = segments[markerIndex + 1] ?? segments[segments.length - 1] ?? "media";
 
   return {
-    username: sanitizeFilePart(source.sourceUsername ?? fallbackUsername ?? "instagram"),
+    username: sanitizeFilePart(source.sourceUsername ?? fallbackUsername ?? fallbackSource),
     postId: sanitizeFilePart(source.sourceId ?? fallbackId),
   };
 }
@@ -159,6 +199,18 @@ function getDownloadUrl(media: MediaItem, baseName: string) {
 
 function getDownloadFileName(media: MediaItem, baseName: string) {
   return `${baseName}.${media.type === "video" ? "mp4" : "png"}`;
+}
+
+function startBrowserDownload(media: MediaItem, source: DownloadSource) {
+  const baseName = getDownloadBaseName(source);
+  const anchor = document.createElement("a");
+  anchor.href = getDownloadUrl(media, baseName);
+  anchor.download = getDownloadFileName(media, baseName);
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 async function readResponseBlob(response: Response, onProgress: DownloadProgressCallback) {
@@ -303,7 +355,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
-    void navigator.serviceWorker.register("/sw.js", { scope: "/" });
+
+    const timeoutId = window.setTimeout(() => {
+      void navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    }, 1500);
+
+    return () => window.clearTimeout(timeoutId);
   }, []);
 
   useEffect(() => {
@@ -367,6 +424,13 @@ export default function Home() {
         indeterminate: true,
       });
 
+      if (media.type === "video") {
+        startBrowserDownload(media, source);
+        setDownloadMessage("Download handed to Chrome.");
+        markComplete();
+        return;
+      }
+
       try {
         const blob = await prepareDownloadBlob(
           media,
@@ -411,7 +475,7 @@ export default function Home() {
   );
 
   const queueDownloads = useCallback(
-    (media: MediaItem[], source: DownloadSource, onComplete?: () => void) => {
+    (media: MediaItem[], source: DownloadSource) => {
       pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       pendingDownloadsRef.current = [];
       const sequence = ++downloadSequenceRef.current;
@@ -433,7 +497,6 @@ export default function Home() {
 
         if (index === media.length - 1) {
           setDownloadMessage("Downloads complete.");
-          onComplete?.();
           return;
         }
 
@@ -450,32 +513,66 @@ export default function Home() {
 
   const handoffShareDownloads = useCallback(
     (media: MediaItem[], source: DownloadSource) => {
+      pendingDownloadsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      pendingDownloadsRef.current = [];
+      const sequence = ++downloadSequenceRef.current;
+
       void acquireShareWakeLock();
-      queueDownloads(media, source, () => {
+      setDownloadMessage("Sending downloads to Chrome.");
+      setDownloadProgress({
+        current: 1,
+        total: media.length,
+        percent: 0,
+        phase: "downloading",
+        indeterminate: true,
+      });
+
+      const handoffNext = (index: number) => {
+        if (downloadSequenceRef.current !== sequence || !media[index]) return;
+
+        startBrowserDownload(media[index], source);
+        const completed = index + 1;
+        setDownloadProgress({
+          current: completed,
+          total: media.length,
+          percent: (completed / media.length) * 100,
+          phase: completed === media.length ? "complete" : "downloading",
+          indeterminate: false,
+        });
+
+        if (completed < media.length) {
+          const timeoutId = window.setTimeout(() => handoffNext(completed), 900);
+          pendingDownloadsRef.current.push(timeoutId);
+          return;
+        }
+
+        setDownloadMessage("Downloads handed to Chrome.");
         setShareDownloadComplete(true);
-        releaseShareWakeLock();
 
         if (shareCloseRef.current) window.clearTimeout(shareCloseRef.current);
         shareCloseRef.current = window.setTimeout(() => {
+          releaseShareWakeLock();
           try {
             window.close();
           } catch {
             // Browsers may refuse to close a PWA window they did not open.
           }
           shareCloseRef.current = null;
-        }, 1200);
-      });
+        }, 2500);
+      };
+
+      handoffNext(0);
     },
-    [acquireShareWakeLock, queueDownloads, releaseShareWakeLock],
+    [acquireShareWakeLock, releaseShareWakeLock],
   );
 
   const resolveUrl = useCallback(
     async (rawValue: string, force = false, fromShare = false) => {
-      const normalized = normalizeInstagramUrl(rawValue);
+      const normalized = normalizeMediaUrl(rawValue);
       if (!normalized) {
         if (force) {
           setViewState("error");
-          setErrorMessage("Paste a full link from instagram.com.");
+          setErrorMessage("Paste a full Instagram or X post link.");
         }
         return;
       }
@@ -509,7 +606,7 @@ export default function Home() {
           signal: controller.signal,
         });
         const payload = (await response.json()) as ResolveResult & { error?: string };
-        if (!response.ok) throw new Error(payload.error || "Instagram link could not be read.");
+        if (!response.ok) throw new Error(payload.error || "That link could not be read.");
 
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
@@ -534,7 +631,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!autoDownloadPreferenceReady) return;
-    const sharedUrl = getSharedInstagramUrl();
+    const sharedUrl = getSharedMediaUrl();
     if (!sharedUrl || sharedLookupRef.current === sharedUrl) return;
 
     sharedLookupRef.current = sharedUrl;
@@ -545,7 +642,7 @@ export default function Home() {
 
   const queueLookup = (value: string) => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    if (!normalizeInstagramUrl(value)) return;
+    if (!normalizeMediaUrl(value)) return;
     debounceRef.current = window.setTimeout(() => resolveUrl(value), 220);
   };
 
@@ -627,7 +724,7 @@ export default function Home() {
           aria-label="Clear and refresh"
           title="Clear and refresh"
         >
-          <ArrowClockwise size={18} weight="regular" aria-hidden="true" />
+          <Icon name="arrow-clockwise" size={18} />
         </button>
         <a className="brand" href="#top" aria-label="Instagram Downloader home">
           <span className="brand-label">Instagram Downloader</span>
@@ -653,10 +750,10 @@ export default function Home() {
           <div className="paste-zone">
             <form className="input-card" onSubmit={handleSubmit}>
               <label className="sr-only" htmlFor="instagram-url">
-                Instagram link
+                Instagram or X link
               </label>
               <div className={`url-field ${viewState === "error" ? "has-error" : ""}`}>
-                <LinkSimple className="field-icon" size={19} weight="regular" aria-hidden="true" />
+                <Icon className="field-icon" name="link" size={19} />
                 <input
                   id="instagram-url"
                   ref={inputRef}
@@ -669,14 +766,14 @@ export default function Home() {
                     setViewState("idle");
                     queueLookup(nextValue);
                   }}
-                  placeholder="Paste an Instagram link"
+                  placeholder="Paste an Instagram or X link"
                   autoComplete="url"
                   spellCheck={false}
                   aria-invalid={viewState === "error"}
                 />
                 {url ? (
                   <button className="clear-button" type="button" onClick={clearAll} aria-label="Clear link">
-                    <X size={17} weight="bold" />
+                    <Icon name="x" size={17} />
                   </button>
                 ) : null}
                 <button
@@ -687,12 +784,12 @@ export default function Home() {
                   aria-label={pasteState === "pasting" ? "Pasting link" : "Paste link"}
                   title={pasteState === "pasting" ? "Pasting link" : "Paste link"}
                 >
-                  <ClipboardText size={17} weight="regular" aria-hidden="true" />
+                  <Icon name="clipboard" size={17} />
                 </button>
               </div>
               {viewState === "error" ? (
                 <p className="error-note" role="alert">
-                  <WarningCircle size={15} weight="fill" aria-hidden="true" />
+                  <Icon name="warning" size={15} />
                   {errorMessage}
                 </p>
               ) : null}
@@ -716,7 +813,7 @@ export default function Home() {
               aria-label="Download all media"
               title="Download all"
             >
-              <DownloadSimple size={17} weight="bold" />
+              <Icon name="download" size={17} />
               <span>Download all</span>
             </button>
           </div>
@@ -729,7 +826,7 @@ export default function Home() {
         {viewState === "embed-only" && result ? <EmbedOnlyState result={result} /> : null}
         {shareDownloadComplete ? (
           <p className="share-complete-note" role="status">
-            Saved — return to Instagram.
+            Saved — return to {result?.platform === "twitter" ? "X" : "Instagram"}.
           </p>
         ) : null}
         {downloadMessage ? <p className="sr-only" role="status">{downloadMessage}</p> : null}
@@ -776,7 +873,15 @@ function DownloadProgressBar({ progress }: { progress: DownloadProgressState }) 
   );
 }
 
-function VideoPlayer({ media, label }: { media: MediaItem; label: string }) {
+function VideoPlayer({
+  media,
+  label,
+  autoPlay,
+}: {
+  media: MediaItem;
+  label: string;
+  autoPlay: boolean;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [muted, setMuted] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -810,11 +915,11 @@ function VideoPlayer({ media, label }: { media: MediaItem; label: string }) {
     <div className="cosmos-video-shell">
       <video
         ref={videoRef}
-        autoPlay
+        autoPlay={autoPlay}
         loop
         muted={muted}
         playsInline
-        preload="metadata"
+        preload={autoPlay ? "metadata" : "none"}
         poster={media.thumbnailUrl}
         src={media.url}
         aria-label={label}
@@ -834,7 +939,7 @@ function VideoPlayer({ media, label }: { media: MediaItem; label: string }) {
         aria-label={muted ? "Unmute" : "Mute"}
         title={muted ? "Unmute" : "Mute"}
       >
-        {muted ? <SpeakerSlash size={17} weight="regular" /> : <SpeakerHigh size={17} weight="regular" />}
+        <Icon name={muted ? "speaker-slash" : "speaker-high"} size={17} />
       </button>
       <div className="cosmos-video-progress">
         <div className="cosmos-video-track">
@@ -871,7 +976,7 @@ function ResultState({
     <div className="result-state">
       <div
         className={`media-grid ${result.media.length === 1 ? "single-media" : "multi-media"}`}
-        aria-label={`${result.media.length} Instagram media items`}
+        aria-label={`${result.media.length} ${result.platform === "twitter" ? "X" : "Instagram"} media items`}
       >
         {result.media.map((media, index) => (
           <article className="media-card" key={`${media.url}-${index}`}>
@@ -880,6 +985,7 @@ function ResultState({
                 <VideoPlayer
                   media={media}
                   label={`${labelForKind(result.kind)} video ${index + 1}`}
+                  autoPlay={result.media.length === 1}
                 />
               ) : (
                 <img
@@ -900,7 +1006,7 @@ function ResultState({
                     aria-label="Open video in a new tab"
                     title="Open in new tab"
                   >
-                    <ArrowSquareOut size={17} weight="bold" />
+                    <Icon name="arrow-square-out" size={17} />
                   </a>
                 ) : null}
                 <button
@@ -910,7 +1016,7 @@ function ResultState({
                   aria-label={`Download ${media.type} ${index + 1}`}
                   title={`Download ${media.type}`}
                 >
-                  <DownloadSimple size={17} weight="bold" />
+                  <Icon name="download" size={17} />
                 </button>
               </div>
             </div>
@@ -923,6 +1029,7 @@ function ResultState({
 
 function EmbedOnlyState({ result }: { result: ResolveResult }) {
   const isStory = result.kind === "story";
+  const sourceLabel = result.platform === "twitter" ? "X" : "Instagram";
 
   return (
     <div className="embed-state">
@@ -933,17 +1040,17 @@ function EmbedOnlyState({ result }: { result: ResolveResult }) {
             <p>{result.message ?? "No active public story is available."}</p>
           </div>
         ) : (
-          <iframe src={result.embedUrl} title="Instagram public embed preview" loading="lazy" />
+          <iframe src={result.embedUrl} title={`${sourceLabel} public embed preview`} loading="lazy" />
         )}
         <a
           className="external-link"
           href={result.canonicalUrl}
           target="_blank"
           rel="noreferrer"
-          aria-label="Open original Instagram page"
-          title="Open Instagram"
+          aria-label={`Open original ${sourceLabel} page`}
+          title={`Open ${sourceLabel}`}
         >
-          <ArrowUpRight size={17} weight="bold" />
+          <Icon name="arrow-up-right" size={17} />
         </a>
       </div>
     </div>

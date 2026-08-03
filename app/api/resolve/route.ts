@@ -1,10 +1,19 @@
 import { NextResponse } from "next/server";
 
-const SOURCE_HOSTS = new Set([
+const INSTAGRAM_SOURCE_HOSTS = new Set([
   "instagram.com",
   "www.instagram.com",
   "instagr.am",
   "www.instagr.am",
+]);
+
+const TWITTER_SOURCE_HOSTS = new Set([
+  "x.com",
+  "www.x.com",
+  "twitter.com",
+  "www.twitter.com",
+  "mobile.twitter.com",
+  "m.twitter.com",
 ]);
 
 const REQUEST_HEADERS = {
@@ -884,18 +893,287 @@ async function fetchCarouselMedia(url: URL) {
   return firstMedia ? [firstMedia] : [];
 }
 
+type TwitterPostIdentity = {
+  id: string;
+  username?: string;
+};
+
+function getTwitterPostIdentity(url: URL): TwitterPostIdentity | undefined {
+  const segments = url.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+  const statusIndex = segments.findIndex((segment) =>
+    ["status", "statuses"].includes(segment.toLowerCase()),
+  );
+  const id = segments[statusIndex + 1];
+  if (statusIndex < 0 || !/^\d{5,25}$/.test(id ?? "")) return undefined;
+
+  const candidate = segments[statusIndex - 1];
+  const username =
+    candidate && !["i", "web"].includes(candidate.toLowerCase())
+      ? candidate.replace(/^@/, "")
+      : undefined;
+
+  return { id, username };
+}
+
+function isTwitterMediaUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      ["pbs.twimg.com", "video.twimg.com"].includes(url.hostname.toLowerCase())
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizeTwitterImageUrl(value: string) {
+  const cleaned = cleanValue(value);
+  try {
+    const url = new URL(cleaned);
+    if (url.hostname.toLowerCase() !== "pbs.twimg.com") return cleaned;
+
+    const match = url.pathname.match(
+      /^\/media\/([^/. :]+)(?:\.([a-z0-9]+))?(?::(?:small|medium|large|orig))?$/i,
+    );
+    if (!match) return cleaned;
+
+    const format = (url.searchParams.get("format") ?? match[2] ?? "jpg").toLowerCase();
+    url.pathname = `/media/${match[1]}`;
+    url.search = "";
+    url.searchParams.set("format", format);
+    url.searchParams.set("name", "orig");
+    return url.toString();
+  } catch {
+    return cleaned;
+  }
+}
+
+function readTwitterStreamRecord(html: string, key: string) {
+  const marker = `"${key}":$R[`;
+  const markerIndex = html.indexOf(marker);
+  if (markerIndex < 0) return undefined;
+
+  const objectStart = html.indexOf("={", markerIndex + marker.length);
+  if (objectStart < 0) return undefined;
+
+  const objectEnd = html.indexOf("},\"", objectStart + 2);
+  if (objectEnd < 0) return undefined;
+  return html.slice(objectStart + 2, objectEnd + 1);
+}
+
+function readTwitterStringField(record: string, field: string) {
+  const match = record.match(new RegExp(`(?:^|,)${field}:"([^"\\r\\n]+)"`, "i"));
+  return match?.[1] ? cleanValue(match[1]) : undefined;
+}
+
+function readTwitterNumberField(record: string, field: string) {
+  const match = record.match(new RegExp(`(?:^|,)${field}:(\\d+)`, "i"));
+  return match?.[1] ? Number(match[1]) : 0;
+}
+
+function twitterVideoQualityScore(value: string, bitrate: number) {
+  const resolution = value.match(/\/vid\/(?:[^/]+\/)?(\d{2,5})x(\d{2,5})\//i);
+  const area = resolution ? Number(resolution[1]) * Number(resolution[2]) : 0;
+  return area * 10_000_000 + bitrate;
+}
+
+function extractTwitterMedia(html: string, postId: string) {
+  const media: MediaItem[] = [];
+  const tweetToken = Buffer.from(`Tweet:${postId}`).toString("base64");
+  const mediaPrefix = `client:${tweetToken}:media_entities2:`;
+
+  for (let index = 0; index < MAX_CAROUSEL_ITEMS; index += 1) {
+    const record = readTwitterStreamRecord(html, `${mediaPrefix}${index}`);
+    if (!record) continue;
+
+    const sourceType = readTwitterStringField(record, "type")?.toLowerCase();
+    const rawThumbnail = readTwitterStringField(record, "media_url_https");
+    const thumbnailUrl = rawThumbnail && isTwitterMediaUrl(rawThumbnail)
+      ? normalizeTwitterImageUrl(rawThumbnail)
+      : undefined;
+
+    if (sourceType === "photo" && thumbnailUrl) {
+      media.push({ type: "image", url: thumbnailUrl });
+      continue;
+    }
+
+    if (sourceType !== "video" && sourceType !== "animated_gif") continue;
+
+    let bestVideo: { url: string; score: number } | undefined;
+    for (let variantIndex = 0; variantIndex < 24; variantIndex += 1) {
+      const variant = readTwitterStreamRecord(
+        html,
+        `${mediaPrefix}${index}:video_info:variants:${variantIndex}`,
+      );
+      if (!variant) continue;
+
+      const contentType = readTwitterStringField(variant, "content_type");
+      const rawUrl = readTwitterStringField(variant, "url");
+      if (contentType !== "video/mp4" || !rawUrl || !isTwitterMediaUrl(rawUrl)) continue;
+
+      const bitrate = readTwitterNumberField(variant, "bitrate");
+      const score = twitterVideoQualityScore(rawUrl, bitrate);
+      if (!bestVideo || score > bestVideo.score) bestVideo = { url: rawUrl, score };
+    }
+
+    if (bestVideo) {
+      media.push({
+        type: "video",
+        url: bestVideo.url,
+        ...(thumbnailUrl ? { thumbnailUrl } : {}),
+      });
+    }
+  }
+
+  if (!media.length) {
+    const fallbackImage = extractMeta(html, "og:image");
+    if (fallbackImage && /pbs\.twimg\.com\/media\//i.test(fallbackImage)) {
+      const normalized = normalizeTwitterImageUrl(fallbackImage);
+      if (isTwitterMediaUrl(normalized)) media.push({ type: "image", url: normalized });
+    }
+  }
+
+  return media;
+}
+
+function getQuotedTwitterPostId(html: string, postId: string) {
+  const tweetToken = Buffer.from(`Tweet:${postId}`).toString("base64");
+  const record = readTwitterStreamRecord(html, tweetToken);
+  return record?.match(
+    /quoted_tweet_results:[\s\S]{0,160}?__ref:"TweetResults:(\d{5,25})"/i,
+  )?.[1];
+}
+
+function getTwitterUsername(html: string, fallback?: string) {
+  const canonical = extractMeta(html, "og:url") ?? extractCanonical(html);
+  if (canonical) {
+    try {
+      const identity = getTwitterPostIdentity(new URL(canonical));
+      if (identity?.username) return identity.username;
+    } catch {
+      // Fall through to the title or submitted path.
+    }
+  }
+
+  const title = extractMeta(html, "og:title");
+  return title?.match(/\(@([a-z0-9_]{1,50})\)\s+on\s+X/i)?.[1] ?? fallback;
+}
+
+function getTwitterCanonicalUrl(html: string, identity: TwitterPostIdentity) {
+  const discovered = extractMeta(html, "og:url") ?? extractCanonical(html);
+  if (discovered) {
+    try {
+      const candidate = new URL(discovered);
+      const candidateIdentity = getTwitterPostIdentity(candidate);
+      if (
+        TWITTER_SOURCE_HOSTS.has(candidate.hostname.toLowerCase()) &&
+        candidateIdentity?.id === identity.id
+      ) {
+        const username = candidateIdentity.username ?? identity.username;
+        return username
+          ? `https://x.com/${username}/status/${identity.id}`
+          : `https://x.com/i/web/status/${identity.id}`;
+      }
+    } catch {
+      // Use the normalized submitted URL below.
+    }
+  }
+
+  return identity.username
+    ? `https://x.com/${identity.username}/status/${identity.id}`
+    : `https://x.com/i/web/status/${identity.id}`;
+}
+
+async function resolveTwitterPost(sourceUrl: URL) {
+  const submittedIdentity = getTwitterPostIdentity(sourceUrl);
+  if (!submittedIdentity) {
+    return NextResponse.json(
+      { error: "Use a full X or Twitter post link." },
+      { status: 422 },
+    );
+  }
+
+  const pageUrl = submittedIdentity.username
+    ? `https://x.com/${submittedIdentity.username}/status/${submittedIdentity.id}`
+    : `https://x.com/i/web/status/${submittedIdentity.id}`;
+  let html = await fetchHtml(pageUrl);
+
+  const targetToken = Buffer.from(`Tweet:${submittedIdentity.id}`).toString("base64");
+  if (!html.includes(`client:${targetToken}:`) && submittedIdentity.username) {
+    const fallbackHtml = await fetchHtml(
+      `https://x.com/i/web/status/${submittedIdentity.id}`,
+    );
+    if (fallbackHtml.length > html.length) html = fallbackHtml;
+  }
+
+  let media = extractTwitterMedia(html, submittedIdentity.id);
+  const quotedPostId = getQuotedTwitterPostId(html, submittedIdentity.id);
+  if (!media.length && quotedPostId) {
+    media = extractTwitterMedia(html, quotedPostId);
+  }
+  const sourceUsername = getTwitterUsername(html, submittedIdentity.username) ?? "x";
+  const canonicalUrl = getTwitterCanonicalUrl(html, {
+    ...submittedIdentity,
+    username: sourceUsername,
+  });
+  const embedUrl =
+    `https://platform.twitter.com/embed/Tweet.html?id=${submittedIdentity.id}&theme=light&dnt=true`;
+  const caption = extractMeta(html, "og:description");
+  const title = extractMeta(html, "og:title");
+
+  if (!media.length) {
+    return NextResponse.json({
+      ok: true,
+      status: "embed-only",
+      platform: "twitter",
+      kind: "post",
+      canonicalUrl,
+      embedUrl,
+      sourceUsername,
+      sourceId: submittedIdentity.id,
+      caption,
+      title,
+      media: [],
+      message: "X did not expose downloadable media for this public post.",
+    });
+  }
+
+  return NextResponse.json({
+    ok: true,
+    status: "ready",
+    platform: "twitter",
+    kind: "post",
+    canonicalUrl,
+    embedUrl,
+    sourceUsername,
+    sourceId: submittedIdentity.id,
+    caption,
+    title,
+    media,
+  });
+}
+
 export async function POST(request: Request) {
   try {
     const payload = (await request.json()) as { url?: string };
     const input = payload.url?.trim();
     if (!input) {
-      return NextResponse.json({ error: "Paste an Instagram link first." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Paste an Instagram or X link first." },
+        { status: 400 },
+      );
     }
 
     const sourceUrl = new URL(input);
-    if (!SOURCE_HOSTS.has(sourceUrl.hostname.toLowerCase())) {
+    const sourceHost = sourceUrl.hostname.toLowerCase();
+    if (TWITTER_SOURCE_HOSTS.has(sourceHost)) {
+      return resolveTwitterPost(sourceUrl);
+    }
+
+    if (!INSTAGRAM_SOURCE_HOSTS.has(sourceHost)) {
       return NextResponse.json(
-        { error: "Use a link from instagram.com." },
+        { error: "Use a link from Instagram, X, or Twitter." },
         { status: 422 },
       );
     }
@@ -961,6 +1239,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         status: "embed-only",
+        platform: "instagram",
         kind: resolvedKind,
         canonicalUrl: resolvedCanonical,
         embedUrl: resolvedEmbedUrl,
@@ -978,6 +1257,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       status: "ready",
+      platform: "instagram",
       kind: resolvedKind,
       canonicalUrl: resolvedCanonical,
       embedUrl: resolvedEmbedUrl,
@@ -988,7 +1268,7 @@ export async function POST(request: Request) {
     });
   } catch {
     return NextResponse.json(
-      { error: "That does not look like a valid Instagram link." },
+      { error: "That does not look like a valid Instagram or X link." },
       { status: 422 },
     );
   }

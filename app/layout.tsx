@@ -1,14 +1,12 @@
 import type { Metadata, Viewport } from "next";
-import "@fontsource/instrument-serif/400.css";
-import "@fontsource/manrope/400.css";
-import "@fontsource/manrope/500.css";
-import "@fontsource/manrope/600.css";
-import "@fontsource/manrope/700.css";
+import "@fontsource/instrument-serif/latin-400.css";
+import "@fontsource/manrope/latin-400.css";
+import "@fontsource/manrope/latin-700.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Download images",
-  description: "A minimal downloader for public Instagram media.",
+  description: "A minimal downloader for public Instagram and X media.",
   applicationName: "Download images",
   manifest: "/manifest.webmanifest",
   icons: {
