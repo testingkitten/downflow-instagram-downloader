@@ -54,6 +54,11 @@ type MediaDimensions = {
   width: number;
   height: number;
 };
+type ResolveCacheEntry = {
+  url: string;
+  savedAt: number;
+  result: ResolveResult;
+};
 
 const SUPPORTED_HOSTS = new Set([
   "instagram.com",
@@ -68,6 +73,9 @@ const SUPPORTED_HOSTS = new Set([
   "m.twitter.com",
 ]);
 const AUTO_DOWNLOAD_STORAGE_KEY = "downflow:auto-download";
+const RESOLVE_CACHE_STORAGE_KEY = "downflow:resolve-cache:v1";
+const RESOLVE_CACHE_TTL_MS = 5 * 60 * 1000;
+const RESOLVE_CACHE_MAX_ENTRIES = 8;
 const ICON_PATHS = {
   "arrow-clockwise": "M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z",
   "arrow-square-out": "M228,104a12,12,0,0,1-24,0V69l-59.51,59.51a12,12,0,0,1-17-17L187,52H152a12,12,0,0,1,0-24h64a12,12,0,0,1,12,12Zm-44,24a12,12,0,0,0-12,12v64H52V84h64a12,12,0,0,0,0-24H48A20,20,0,0,0,28,80V208a20,20,0,0,0,20,20H176a20,20,0,0,0,20-20V140A12,12,0,0,0,184,128Z",
@@ -144,12 +152,81 @@ function detectPlatform(value: string): ResolveResult["platform"] | null {
 function normalizeMediaUrl(value: string) {
   try {
     const parsed = new URL(value.trim());
-    if (!SUPPORTED_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+    const hostname = parsed.hostname.toLowerCase();
+    if (!SUPPORTED_HOSTS.has(hostname)) return null;
     if (!["http:", "https:"].includes(parsed.protocol)) return null;
     parsed.protocol = "https:";
+    parsed.hostname = hostname.includes("instagram") || hostname.includes("instagr.am")
+      ? "www.instagram.com"
+      : "x.com";
+    parsed.search = "";
+    parsed.hash = "";
     return parsed.toString();
   } catch {
     return null;
+  }
+}
+
+function isStoryUrl(value: string) {
+  try {
+    return new URL(value).pathname.toLowerCase().includes("/stories/");
+  } catch {
+    return false;
+  }
+}
+
+function readResolveCache() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RESOLVE_CACHE_STORAGE_KEY) ?? "[]");
+    return Array.isArray(parsed) ? (parsed as ResolveCacheEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getCachedResolveResult(url: string) {
+  if (isStoryUrl(url)) return null;
+
+  const now = Date.now();
+  const entries = readResolveCache().filter(
+    (entry) =>
+      typeof entry?.url === "string" &&
+      typeof entry?.savedAt === "number" &&
+      now - entry.savedAt < RESOLVE_CACHE_TTL_MS &&
+      entry.result?.status === "ready" &&
+      Array.isArray(entry.result.media),
+  );
+  const match = entries.find((entry) => entry.url === url);
+
+  try {
+    window.localStorage.setItem(RESOLVE_CACHE_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // Local caching is an optional optimization.
+  }
+
+  return match?.result ?? null;
+}
+
+function cacheResolveResult(url: string, result: ResolveResult) {
+  if (isStoryUrl(url) || result.status !== "ready" || !result.media.length) return;
+
+  const now = Date.now();
+  const entries = readResolveCache()
+    .filter(
+      (entry) =>
+        entry.url !== url &&
+        typeof entry.savedAt === "number" &&
+        now - entry.savedAt < RESOLVE_CACHE_TTL_MS,
+    )
+    .slice(0, RESOLVE_CACHE_MAX_ENTRIES - 1);
+
+  try {
+    window.localStorage.setItem(
+      RESOLVE_CACHE_STORAGE_KEY,
+      JSON.stringify([{ url, savedAt: now, result }, ...entries]),
+    );
+  } catch {
+    // A full or unavailable localStorage must not block resolving media.
   }
 }
 
@@ -292,29 +369,8 @@ function getDownloadBaseName(source: DownloadSource) {
   return `${identity.username}-${identity.postId}-${randomToken()}`;
 }
 
-function getDownloadUrl(media: MediaItem, baseName: string) {
-  return `/api/download?url=${encodeURIComponent(media.url)}&name=${encodeURIComponent(baseName)}`;
-}
-
-function getPreviewProxyUrl(media: MediaItem) {
-  const sourceUrl = media.previewUrl ?? media.url;
-  return `/api/download?url=${encodeURIComponent(sourceUrl)}&name=preview&inline=1`;
-}
-
 function getDownloadFileName(media: MediaItem, baseName: string) {
   return `${baseName}.${media.type === "video" ? "mp4" : "png"}`;
-}
-
-function startBrowserDownload(media: MediaItem, source: DownloadSource) {
-  const baseName = getDownloadBaseName(source);
-  const anchor = document.createElement("a");
-  anchor.href = getDownloadUrl(media, baseName);
-  anchor.download = getDownloadFileName(media, baseName);
-  anchor.rel = "noopener";
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
 }
 
 async function readResponseBlob(response: Response, onProgress: DownloadProgressCallback) {
@@ -344,40 +400,29 @@ async function readResponseBlob(response: Response, onProgress: DownloadProgress
   return new Blob(chunks as BlobPart[], { type: contentType });
 }
 
-async function fetchMediaBlob(
-  media: MediaItem,
-  baseName: string,
-  onProgress: DownloadProgressCallback,
-) {
-  try {
-    const directResponse = await fetch(media.url, {
-      cache: "no-store",
-      redirect: "follow",
-    });
-    const contentType = directResponse.headers.get("content-type") ?? "";
-    const expectedType = media.type === "video" ? "video/" : "image/";
+async function fetchMediaBlob(media: MediaItem, onProgress: DownloadProgressCallback) {
+  const directResponse = await fetch(media.url, {
+    cache: "force-cache",
+    credentials: "omit",
+    mode: "cors",
+    redirect: "follow",
+  });
+  const contentType = directResponse.headers.get("content-type") ?? "";
+  const expectedType = media.type === "video" ? "video/" : "image/";
 
-    if (directResponse.ok && contentType.startsWith(expectedType)) {
-      return readResponseBlob(directResponse, onProgress);
-    }
-  } catch {
-    // Some CDN variants reject browser fetches; use the same-origin fallback below.
+  if (!directResponse.ok || !contentType.startsWith(expectedType)) {
+    throw new Error("The source blocked a direct browser download.");
   }
 
-  const fallbackResponse = await fetch(getDownloadUrl(media, baseName), {
-    cache: "no-store",
-  });
-  if (!fallbackResponse.ok) throw new Error("Download proxy unavailable");
-  return readResponseBlob(fallbackResponse, onProgress);
+  return readResponseBlob(directResponse, onProgress);
 }
 
 async function prepareDownloadBlob(
   media: MediaItem,
-  baseName: string,
   onProgress: DownloadProgressCallback,
   onPreparing: () => void,
 ) {
-  const sourceBlob = await fetchMediaBlob(media, baseName, onProgress);
+  const sourceBlob = await fetchMediaBlob(media, onProgress);
   if (media.type === "video") return sourceBlob;
 
   onPreparing();
@@ -547,17 +592,9 @@ export default function Home() {
         indeterminate: true,
       });
 
-      if (media.type === "video") {
-        startBrowserDownload(media, source);
-        setDownloadMessage("Download handed to Chrome.");
-        markComplete();
-        return;
-      }
-
       try {
         const blob = await prepareDownloadBlob(
           media,
-          baseName,
           (loaded, bytesTotal) => {
             const fraction = bytesTotal ? Math.min(loaded / bytesTotal, 1) : 0.12;
             setItemDownloadProgress((previous) => ({
@@ -600,11 +637,11 @@ export default function Home() {
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-        setDownloadMessage("Download started.");
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+        setDownloadMessage("Saved from the source on this device.");
       } catch {
         window.open(media.url, "_blank", "noopener,noreferrer");
-        setDownloadMessage("The media source was opened.");
+        setDownloadMessage("The source blocked local saving, so it was opened directly.");
       }
 
       markComplete();
@@ -658,7 +695,7 @@ export default function Home() {
 
       setItemDownloadProgress({});
       void acquireShareWakeLock();
-      setDownloadMessage("Sending downloads to Chrome.");
+      setDownloadMessage("Saving on this device.");
       setDownloadProgress({
         current: 1,
         total: media.length,
@@ -667,30 +704,21 @@ export default function Home() {
         indeterminate: true,
       });
 
-      const handoffNext = (index: number) => {
+      const handoffNext = async (index: number) => {
         if (downloadSequenceRef.current !== sequence || !media[index]) return;
 
-        startBrowserDownload(media[index], source);
+        await downloadMedia(media[index], source, index, media.length, true);
+        if (downloadSequenceRef.current !== sequence) return;
+
         const completed = index + 1;
-        setItemDownloadProgress((previous) => ({
-          ...previous,
-          [index]: { phase: "complete", percent: 100, indeterminate: false },
-        }));
-        setDownloadProgress({
-          current: completed,
-          total: media.length,
-          percent: (completed / media.length) * 100,
-          phase: completed === media.length ? "complete" : "downloading",
-          indeterminate: false,
-        });
 
         if (completed < media.length) {
-          const timeoutId = window.setTimeout(() => handoffNext(completed), 900);
+          const timeoutId = window.setTimeout(() => void handoffNext(completed), 650);
           pendingDownloadsRef.current.push(timeoutId);
           return;
         }
 
-        setDownloadMessage("Downloads handed to Chrome.");
+        setDownloadMessage("Downloads saved on this device.");
         setShareDownloadComplete(true);
 
         if (shareCloseRef.current) window.clearTimeout(shareCloseRef.current);
@@ -705,9 +733,9 @@ export default function Home() {
         }, 2500);
       };
 
-      handoffNext(0);
+      void handoffNext(0);
     },
-    [acquireShareWakeLock, releaseShareWakeLock],
+    [acquireShareWakeLock, downloadMedia, releaseShareWakeLock],
   );
 
   const resolveUrl = useCallback(
@@ -744,14 +772,21 @@ export default function Home() {
       setViewState("loading");
 
       try {
-        const response = await fetch("/api/resolve", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: normalized }),
-          signal: controller.signal,
-        });
-        const payload = (await response.json()) as ResolveResult & { error?: string };
-        if (!response.ok) throw new Error(payload.error || "That link could not be read.");
+        let payload = getCachedResolveResult(normalized) as
+          | (ResolveResult & { error?: string })
+          | null;
+
+        if (!payload) {
+          const query = new URLSearchParams({ url: normalized });
+          const response = await fetch(`/api/resolve?${query}`, {
+            cache: "default",
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          });
+          payload = (await response.json()) as ResolveResult & { error?: string };
+          if (!response.ok) throw new Error(payload.error || "That link could not be read.");
+          cacheResolveResult(normalized, payload);
+        }
 
         setResult(payload);
         setViewState(payload.status === "ready" ? "success" : "embed-only");
@@ -1112,17 +1147,12 @@ function VideoPlayer({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const directPreviewUrl = media.previewUrl ?? media.url;
-  const fallbackPreviewUrl = getPreviewProxyUrl(media);
   const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [playbackUrl, setPlaybackUrl] = useState(directPreviewUrl);
-  const [usedFallback, setUsedFallback] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
 
   useEffect(() => {
-    setPlaybackUrl(directPreviewUrl);
-    setUsedFallback(false);
     setPreviewFailed(false);
     setCurrentTime(0);
     setDuration(0);
@@ -1134,9 +1164,9 @@ function VideoPlayer({
     if (!video) return;
 
     if (previewFailed) {
-      setUsedFallback(false);
-      setPlaybackUrl(directPreviewUrl);
       setPreviewFailed(false);
+      video.load();
+      void video.play().catch(() => undefined);
       return;
     }
 
@@ -1166,12 +1196,13 @@ function VideoPlayer({
       <video
         ref={videoRef}
         autoPlay={autoPlay}
+        crossOrigin="anonymous"
         loop
         muted={muted}
         playsInline
-        preload={autoPlay ? "auto" : "metadata"}
+        preload="metadata"
         poster={media.thumbnailUrl}
-        src={playbackUrl}
+        src={directPreviewUrl}
         aria-label={`${label}. Tap to play or pause`}
         tabIndex={0}
         onClick={togglePlayback}
@@ -1186,15 +1217,7 @@ function VideoPlayer({
             void event.currentTarget.play().catch(() => undefined);
           }
         }}
-        onError={() => {
-          if (!usedFallback && playbackUrl !== fallbackPreviewUrl) {
-            setUsedFallback(true);
-            setPlaybackUrl(fallbackPreviewUrl);
-            setPreviewFailed(false);
-            return;
-          }
-          setPreviewFailed(true);
-        }}
+        onError={() => setPreviewFailed(true)}
         onLoadedMetadata={(event) => {
           setDuration(event.currentTarget.duration);
           if (event.currentTarget.videoWidth && event.currentTarget.videoHeight) {

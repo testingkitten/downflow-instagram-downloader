@@ -10,7 +10,8 @@ A focused PWA for resolving media exposed by public Instagram posts, reels, vide
 - Extracts direct MP4 variants for video posts and keeps their image thumbnails for preview.
 - Prefers the original image rendition and highest-resolution audio-bearing MP4 variant without upscaling.
 - Starts each resolved item as its own download; photos are converted to full-resolution PNG files and videos remain individual MP4 files.
-- Uses resumable streamed downloads and does not persist media on Vercel.
+- Fetches media directly from Instagram/X into the browser, converts photos to PNG locally, and never relays or stores media on Vercel.
+- Reuses successful post resolutions from the device for five minutes and briefly caches public resolver responses at the CDN.
 - Falls back to the source's public embed when direct media is not exposed.
 
 ## Important limitation
@@ -28,4 +29,4 @@ Open `http://localhost:3000`.
 
 ## Deploy
 
-The app is designed to run on Vercel with no environment variables. `/api/resolve` performs short-lived page parsing, while `/api/download` streams attachment responses without writing files to disk or cloud storage.
+The app is designed to run on Vercel with no environment variables. The static interface is CDN-hosted, and the only compute route is the small `/api/resolve` metadata parser. Media previews and downloads go directly from the source CDN to the user's device.

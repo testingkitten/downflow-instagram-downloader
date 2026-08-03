@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const maxDuration = 20;
+
 const INSTAGRAM_SOURCE_HOSTS = new Set([
   "instagram.com",
   "www.instagram.com",
@@ -42,6 +44,47 @@ const API_REQUEST_HEADERS = {
 
 const UPSTREAM_TIMEOUT_MS = 6500;
 const MAX_CAROUSEL_ITEMS = 20;
+
+function jsonResponse(
+  payload: unknown,
+  options: { status?: number; browserTtl?: number; cdnTtl?: number } = {},
+) {
+  const { status = 200, browserTtl = 0, cdnTtl = 0 } = options;
+  const headers = new Headers({
+    "Cache-Control": cdnTtl > 0
+      ? `public, max-age=${browserTtl}`
+      : "private, no-store",
+  });
+
+  if (cdnTtl > 0) {
+    headers.set(
+      "Vercel-CDN-Cache-Control",
+      `public, max-age=${cdnTtl}, stale-while-revalidate=60`,
+    );
+  }
+
+  return NextResponse.json(payload, { status, headers });
+}
+
+function createTimedSignal(parentSignal?: AbortSignal) {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort();
+  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+  if (parentSignal?.aborted) {
+    controller.abort();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    },
+  };
+}
 
 type MediaItem = {
   type: "image" | "video";
@@ -801,49 +844,44 @@ function mediaKey(value: string) {
   }
 }
 
-async function fetchHtml(target: string) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-  const timeoutFallback = new Promise<string>((resolve) => {
-    setTimeout(() => resolve(""), UPSTREAM_TIMEOUT_MS);
-  });
+async function fetchHtml(target: string, parentSignal?: AbortSignal) {
+  const timedSignal = createTimedSignal(parentSignal);
 
   try {
-    const request = fetch(target, {
+    const response = await fetch(target, {
       headers: REQUEST_HEADERS,
       redirect: "follow",
       cache: "no-store",
-      signal: controller.signal,
-    }).then(async (response) => (response.ok ? response.text() : ""));
-    return await Promise.race([request, timeoutFallback]);
+      signal: timedSignal.signal,
+    });
+    return response.ok ? await response.text() : "";
   } catch {
     return "";
   } finally {
-    clearTimeout(timeoutId);
+    timedSignal.cleanup();
   }
 }
 
-async function fetchJson(target: string, referer: string) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+async function fetchJson(target: string, referer: string, parentSignal?: AbortSignal) {
+  const timedSignal = createTimedSignal(parentSignal);
 
   try {
     const response = await fetch(target, {
       headers: { ...API_REQUEST_HEADERS, Referer: referer },
       redirect: "follow",
       cache: "no-store",
-      signal: controller.signal,
+      signal: timedSignal.signal,
     });
     if (!response.ok) return undefined;
     return (await response.json()) as unknown;
   } catch {
     return undefined;
   } finally {
-    clearTimeout(timeoutId);
+    timedSignal.cleanup();
   }
 }
 
-async function fetchStoryMedia(url: URL, pageHtml: string) {
+async function fetchStoryMedia(url: URL, pageHtml: string, parentSignal?: AbortSignal) {
   const username = getStoryUsername(url);
   const profileUrl = getStoryProfileFetchUrl(url);
   if (!username || !profileUrl) return [];
@@ -851,27 +889,29 @@ async function fetchStoryMedia(url: URL, pageHtml: string) {
   let userId = extractInstagramUserId(pageHtml, username);
   let profileHtml = pageHtml;
   if (!userId) {
-    profileHtml = await fetchHtml(profileUrl);
+    profileHtml = await fetchHtml(profileUrl, parentSignal);
     userId = extractInstagramUserId(profileHtml, username);
   }
   if (!userId) return [];
 
   const endpoint =
     `https://www.instagram.com/api/v1/feed/reels_media/?reel_ids=${encodeURIComponent(userId)}`;
-  const payload = await fetchJson(endpoint, profileUrl);
+  const payload = await fetchJson(endpoint, profileUrl, parentSignal);
   return extractStoryMedia(payload);
 }
 
-async function fetchMediaEndpoint(target: string): Promise<MediaItem | undefined> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+async function fetchMediaEndpoint(
+  target: string,
+  parentSignal?: AbortSignal,
+): Promise<MediaItem | undefined> {
+  const timedSignal = createTimedSignal(parentSignal);
 
   try {
     const response = await fetch(target, {
       headers: REQUEST_HEADERS,
       redirect: "follow",
       cache: "no-store",
-      signal: controller.signal,
+      signal: timedSignal.signal,
     });
     const contentType = response.headers.get("content-type") ?? "";
     const isImage = contentType.startsWith("image/");
@@ -883,14 +923,14 @@ async function fetchMediaEndpoint(target: string): Promise<MediaItem | undefined
   } catch {
     return undefined;
   } finally {
-    clearTimeout(timeoutId);
+    timedSignal.cleanup();
   }
 }
 
-async function fetchCarouselMedia(url: URL) {
+async function fetchCarouselMedia(url: URL, parentSignal?: AbortSignal) {
   if (getPostKind(url.pathname) === "story") return [];
 
-  const firstMedia = await fetchMediaEndpoint(getMediaEndpointUrl(url, 0));
+  const firstMedia = await fetchMediaEndpoint(getMediaEndpointUrl(url, 0), parentSignal);
   return firstMedia ? [firstMedia] : [];
 }
 
@@ -1104,10 +1144,10 @@ function getTwitterCanonicalUrl(html: string, identity: TwitterPostIdentity) {
     : `https://x.com/i/web/status/${identity.id}`;
 }
 
-async function resolveTwitterPost(sourceUrl: URL) {
+async function resolveTwitterPost(sourceUrl: URL, requestSignal?: AbortSignal) {
   const submittedIdentity = getTwitterPostIdentity(sourceUrl);
   if (!submittedIdentity) {
-    return NextResponse.json(
+    return jsonResponse(
       { error: "Use a full X or Twitter post link." },
       { status: 422 },
     );
@@ -1116,12 +1156,13 @@ async function resolveTwitterPost(sourceUrl: URL) {
   const pageUrl = submittedIdentity.username
     ? `https://x.com/${submittedIdentity.username}/status/${submittedIdentity.id}`
     : `https://x.com/i/web/status/${submittedIdentity.id}`;
-  let html = await fetchHtml(pageUrl);
+  let html = await fetchHtml(pageUrl, requestSignal);
 
   const targetToken = Buffer.from(`Tweet:${submittedIdentity.id}`).toString("base64");
   if (!html.includes(`client:${targetToken}:`) && submittedIdentity.username) {
     const fallbackHtml = await fetchHtml(
       `https://x.com/i/web/status/${submittedIdentity.id}`,
+      requestSignal,
     );
     if (fallbackHtml.length > html.length) html = fallbackHtml;
   }
@@ -1138,11 +1179,9 @@ async function resolveTwitterPost(sourceUrl: URL) {
   });
   const embedUrl =
     `https://platform.twitter.com/embed/Tweet.html?id=${submittedIdentity.id}&theme=light&dnt=true`;
-  const caption = extractMeta(html, "og:description");
-  const title = extractMeta(html, "og:title");
 
   if (!media.length) {
-    return NextResponse.json({
+    return jsonResponse({
       ok: true,
       status: "embed-only",
       platform: "twitter",
@@ -1151,14 +1190,12 @@ async function resolveTwitterPost(sourceUrl: URL) {
       embedUrl,
       sourceUsername,
       sourceId: submittedIdentity.id,
-      caption,
-      title,
       media: [],
       message: "X did not expose downloadable media for this public post.",
-    });
+    }, { browserTtl: 15, cdnTtl: 30 });
   }
 
-  return NextResponse.json({
+  return jsonResponse({
     ok: true,
     status: "ready",
     platform: "twitter",
@@ -1167,31 +1204,31 @@ async function resolveTwitterPost(sourceUrl: URL) {
     embedUrl,
     sourceUsername,
     sourceId: submittedIdentity.id,
-    caption,
-    title,
     media,
-  });
+  }, { browserTtl: 60, cdnTtl: 300 });
 }
 
-export async function POST(request: Request) {
+export async function GET(request: Request) {
   try {
-    const payload = (await request.json()) as { url?: string };
-    const input = payload.url?.trim();
+    const requestUrl = new URL(request.url);
+    const input = requestUrl.searchParams.get("url")?.trim();
     if (!input) {
-      return NextResponse.json(
+      return jsonResponse(
         { error: "Paste an Instagram or X link first." },
         { status: 400 },
       );
     }
 
     const sourceUrl = new URL(input);
+    sourceUrl.search = "";
+    sourceUrl.hash = "";
     const sourceHost = sourceUrl.hostname.toLowerCase();
     if (TWITTER_SOURCE_HOSTS.has(sourceHost)) {
-      return resolveTwitterPost(sourceUrl);
+      return resolveTwitterPost(sourceUrl, request.signal);
     }
 
     if (!INSTAGRAM_SOURCE_HOSTS.has(sourceHost)) {
-      return NextResponse.json(
+      return jsonResponse(
         { error: "Use a link from Instagram, X, or Twitter." },
         { status: 422 },
       );
@@ -1201,12 +1238,12 @@ export async function POST(request: Request) {
     const embedUrl = getEmbedUrl(sourceUrl);
     const kind = getPostKind(sourceUrl.pathname);
     const shortcode = sourceUrl.pathname.split("/").filter(Boolean).pop();
-    const pageHtml = await fetchHtml(getPageFetchUrl(sourceUrl));
+    const pageHtml = await fetchHtml(getPageFetchUrl(sourceUrl), request.signal);
     let html = pageHtml;
     let extractedMedia = extractMedia(pageHtml, shortcode);
 
     if (kind === "story") {
-      const storyMedia = await fetchStoryMedia(sourceUrl, pageHtml);
+      const storyMedia = await fetchStoryMedia(sourceUrl, pageHtml, request.signal);
       if (storyMedia.length) extractedMedia = storyMedia;
     }
 
@@ -1216,13 +1253,12 @@ export async function POST(request: Request) {
         (["reel", "video"].includes(kind) &&
           !extractedMedia.some((item) => item.type === "video")))
     ) {
-      const embedHtml = await fetchHtml(embedUrl);
+      const embedHtml = await fetchHtml(embedUrl, request.signal);
       html = `${pageHtml}\n${embedHtml}`;
       extractedMedia = extractMedia(html, shortcode);
     }
 
     const caption = extractMeta(html, "og:description");
-    const title = extractMeta(html, "og:title");
     const discoveredCanonical = extractCanonical(html);
     let resolvedCanonical = discoveredCanonical ?? canonicalUrl;
 
@@ -1247,7 +1283,9 @@ export async function POST(request: Request) {
       extractUsername(html, caption),
       shortcode,
     );
-    const endpointMedia = extractedMedia.length ? [] : await fetchCarouselMedia(sourceUrl);
+    const endpointMedia = extractedMedia.length
+      ? []
+      : await fetchCarouselMedia(sourceUrl, request.signal);
     const media = extractedMedia.length
       ? ["reel", "video"].includes(resolvedKind)
         ? extractedMedia.filter((item) => item.type === "video")
@@ -1255,7 +1293,7 @@ export async function POST(request: Request) {
       : endpointMedia;
 
     if (!media.length) {
-      return NextResponse.json({
+      return jsonResponse({
         ok: true,
         status: "embed-only",
         platform: "instagram",
@@ -1263,17 +1301,17 @@ export async function POST(request: Request) {
         canonicalUrl: resolvedCanonical,
         embedUrl: resolvedEmbedUrl,
         ...identity,
-        caption,
-        title,
         media: [],
         message:
           resolvedKind === "story"
             ? "Instagram did not expose an active public story for this account."
             : "Instagram did not expose a direct media URL to this request. The public embed is still available below.",
-      });
+      }, resolvedKind === "story"
+        ? { browserTtl: 0, cdnTtl: 10 }
+        : { browserTtl: 15, cdnTtl: 30 });
     }
 
-    return NextResponse.json({
+    return jsonResponse({
       ok: true,
       status: "ready",
       platform: "instagram",
@@ -1281,12 +1319,12 @@ export async function POST(request: Request) {
       canonicalUrl: resolvedCanonical,
       embedUrl: resolvedEmbedUrl,
       ...identity,
-      caption,
-      title,
       media,
-    });
+    }, resolvedKind === "story"
+      ? { browserTtl: 0, cdnTtl: 10 }
+      : { browserTtl: 60, cdnTtl: 300 });
   } catch {
-    return NextResponse.json(
+    return jsonResponse(
       { error: "That does not look like a valid Instagram or X link." },
       { status: 422 },
     );
