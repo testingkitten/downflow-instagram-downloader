@@ -1138,11 +1138,13 @@ function VideoPlayer({
   media,
   label,
   autoPlay,
+  fallbackEmbedUrl,
   onMetadata,
 }: {
   media: MediaItem;
   label: string;
   autoPlay: boolean;
+  fallbackEmbedUrl?: string;
   onMetadata?: (dimensions: MediaDimensions) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1270,10 +1272,21 @@ function VideoPlayer({
   };
 
   const progress = duration ? Math.min((currentTime / duration) * 100, 100) : 0;
+  const useSourceEmbed = previewFailed && Boolean(fallbackEmbedUrl);
 
   return (
     <div className={`cosmos-video-shell ${previewFailed ? "has-preview-error" : ""}`}>
-      <video
+      {useSourceEmbed ? (
+        <iframe
+          className="source-video-frame"
+          src={fallbackEmbedUrl}
+          title={`${label} source-hosted player`}
+          allow="autoplay; fullscreen; picture-in-picture"
+          loading="lazy"
+        />
+      ) : (
+        <>
+          <video
         ref={videoRef}
         autoPlay={autoPlay}
         crossOrigin="anonymous"
@@ -1316,40 +1329,42 @@ function VideoPlayer({
         onPlay={() => setPreviewFailed(false)}
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
         onVolumeChange={(event) => setMuted(event.currentTarget.muted)}
-      />
-      <div className="cosmos-video-gradient" aria-hidden="true" />
-      <button
-        className="cosmos-mute-button"
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          toggleMute();
-        }}
-        aria-label={muted ? "Unmute" : "Mute"}
-        title={muted ? "Unmute" : "Mute"}
-      >
-        <Icon name={muted ? "speaker-slash" : "speaker-high"} size={17} />
-      </button>
-      <div className="cosmos-video-progress">
-        <div className="cosmos-video-track">
-          <span className="cosmos-video-fill" style={{ width: `${progress}%` }} />
-          <input
-            className="cosmos-video-range"
-            type="range"
-            min="0"
-            max={duration || 0}
-            step="0.1"
-            value={Math.min(currentTime, duration || 0)}
-            onChange={(event) => {
-              const nextTime = Number(event.target.value);
-              if (videoRef.current) videoRef.current.currentTime = nextTime;
-              setCurrentTime(nextTime);
-            }}
-            aria-label="Video progress"
-            disabled={!duration}
           />
-        </div>
-      </div>
+          <div className="cosmos-video-gradient" aria-hidden="true" />
+          <button
+            className="cosmos-mute-button"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleMute();
+            }}
+            aria-label={muted ? "Unmute" : "Mute"}
+            title={muted ? "Unmute" : "Mute"}
+          >
+            <Icon name={muted ? "speaker-slash" : "speaker-high"} size={17} />
+          </button>
+          <div className="cosmos-video-progress">
+            <div className="cosmos-video-track">
+              <span className="cosmos-video-fill" style={{ width: `${progress}%` }} />
+              <input
+                className="cosmos-video-range"
+                type="range"
+                min="0"
+                max={duration || 0}
+                step="0.1"
+                value={Math.min(currentTime, duration || 0)}
+                onChange={(event) => {
+                  const nextTime = Number(event.target.value);
+                  if (videoRef.current) videoRef.current.currentTime = nextTime;
+                  setCurrentTime(nextTime);
+                }}
+                aria-label="Video progress"
+                disabled={!duration}
+              />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1417,6 +1432,11 @@ function ResultState({
                     media={media}
                     label={`${labelForKind(result.kind)} video ${index + 1}`}
                     autoPlay={result.media.length === 1}
+                    fallbackEmbedUrl={
+                      result.platform === "twitter" && result.sourceId
+                        ? `https://twitter.com/i/videos/tweet/${encodeURIComponent(result.sourceId)}`
+                        : undefined
+                    }
                     onMetadata={(nextDimensions) => recordDimensions(index, nextDimensions)}
                   />
                 ) : (
