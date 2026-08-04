@@ -54,6 +54,11 @@ function jsonResponse(
     "Cache-Control": cdnTtl > 0
       ? `public, max-age=${browserTtl}`
       : "private, no-store",
+    // The resolver exposes public metadata and public CDN URLs so an installed
+    // editor PWA on a different origin can import a shared social link.
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Accept, Content-Type",
   });
 
   if (cdnTtl > 0) {
@@ -64,6 +69,18 @@ function jsonResponse(
   }
 
   return NextResponse.json(payload, { status, headers });
+}
+
+export function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "Accept, Content-Type",
+      "Access-Control-Max-Age": "86400",
+    },
+  });
 }
 
 function createTimedSignal(parentSignal?: AbortSignal) {
