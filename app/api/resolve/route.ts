@@ -44,6 +44,7 @@ const API_REQUEST_HEADERS = {
 
 const UPSTREAM_TIMEOUT_MS = 6500;
 const MAX_CAROUSEL_ITEMS = 20;
+const MAX_GENERIC_MEDIA_ITEMS = 24;
 
 function jsonResponse(
   payload: unknown,
@@ -879,6 +880,210 @@ async function fetchHtml(target: string, parentSignal?: AbortSignal) {
   }
 }
 
+function isBlockedGenericHostname(hostname: string) {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    normalized === "localhost" ||
+    normalized.endsWith(".local") ||
+    normalized.endsWith(".internal") ||
+    normalized === "0.0.0.0" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1"
+  ) {
+    return true;
+  }
+
+  const ipv4 = normalized.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!ipv4) return false;
+
+  const octets = ipv4.slice(1).map(Number);
+  const [first, second] = octets;
+  return (
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    first >= 224
+  );
+}
+
+function isSafeGenericUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) return false;
+    if (url.port && !['80', '443'].includes(url.port)) return false;
+    return !isBlockedGenericHostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function resolveGenericUrl(rawValue: string | undefined, sourceUrl: string) {
+  if (!rawValue) return undefined;
+
+  const cleaned = cleanValue(rawValue);
+  if (/^(?:data|blob|javascript):/i.test(cleaned)) return undefined;
+
+  try {
+    const resolved = new URL(cleaned, sourceUrl);
+    return isSafeGenericUrl(resolved.toString()) ? resolved.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function addGenericImageCandidate(
+  rawValue: string | undefined,
+  sourceUrl: string,
+  candidates: Map<string, { url: string; score: number; order: number }>,
+  score: number,
+  order: number,
+) {
+  const url = resolveGenericUrl(rawValue, sourceUrl);
+  if (!url) return;
+
+  const key = url.split('#')[0];
+  const current = candidates.get(key);
+  if (!current || score > current.score) {
+    candidates.set(key, { url, score, order: current?.order ?? order });
+  }
+}
+
+function getLargestSrcsetCandidate(value: string, sourceUrl: string) {
+  const candidates = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [rawUrl, descriptor] = entry.split(/\s+/);
+      const descriptorMatch = descriptor?.match(/^(\d+(?:\.\d+)?)(w|x)$/i);
+      const amount = descriptorMatch ? Number(descriptorMatch[1]) : 1;
+      const multiplier = descriptorMatch?.[2].toLowerCase() === 'w' ? 1_000 : 1_000_000;
+      return { rawUrl, score: amount * multiplier };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  const largest = candidates[0];
+  return largest ? resolveGenericUrl(largest.rawUrl, sourceUrl) : undefined;
+}
+
+function extractGenericMedia(html: string, sourceUrl: string) {
+  const candidates = new Map<string, { url: string; score: number; order: number }>();
+  const tags = html.match(/<(?:meta|link|img|source)\b[^>]*>/gi) ?? [];
+  let order = 0;
+
+  for (const tag of tags) {
+    const tagName = tag.match(/^<\s*([a-z]+)/i)?.[1]?.toLowerCase();
+    const property = extractAttribute(tag, 'property')?.toLowerCase();
+    const name = extractAttribute(tag, 'name')?.toLowerCase();
+    const content = extractAttribute(tag, 'content');
+    const href = extractAttribute(tag, 'href');
+
+    if (
+      tagName === 'meta' &&
+      (property === 'og:image' ||
+        property === 'og:image:url' ||
+        property === 'og:image:secure_url' ||
+        name === 'twitter:image' ||
+        name === 'twitter:image:src')
+    ) {
+      addGenericImageCandidate(content, sourceUrl, candidates, 3_000_000, order++);
+      continue;
+    }
+
+    if (tagName === 'link' && extractAttribute(tag, 'rel')?.toLowerCase() === 'image_src') {
+      addGenericImageCandidate(href, sourceUrl, candidates, 2_500_000, order++);
+      continue;
+    }
+
+    if (tagName !== 'img' && tagName !== 'source') continue;
+
+    const srcset =
+      extractAttribute(tag, 'srcset') ??
+      extractAttribute(tag, 'data-srcset') ??
+      extractAttribute(tag, 'data-lazy-srcset');
+    const largestSrcset = srcset ? getLargestSrcsetCandidate(srcset, sourceUrl) : undefined;
+    addGenericImageCandidate(largestSrcset, sourceUrl, candidates, 2_000_000, order++);
+
+    const directSrc =
+      extractAttribute(tag, 'data-src') ??
+      extractAttribute(tag, 'data-lazy-src') ??
+      extractAttribute(tag, 'src');
+    addGenericImageCandidate(directSrc, sourceUrl, candidates, 1_000_000, order++);
+  }
+
+  return [...candidates.values()]
+    .sort((left, right) => left.order - right.order)
+    .slice(0, MAX_GENERIC_MEDIA_ITEMS)
+    .map(({ url }) => ({ type: 'image' as const, url }));
+}
+
+async function fetchGenericHtml(target: string, parentSignal?: AbortSignal) {
+  if (!isSafeGenericUrl(target)) return '';
+  const timedSignal = createTimedSignal(parentSignal);
+
+  try {
+    const response = await fetch(target, {
+      headers: REQUEST_HEADERS,
+      redirect: 'follow',
+      cache: 'no-store',
+      signal: timedSignal.signal,
+    });
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+    if (
+      !response.ok ||
+      !isSafeGenericUrl(response.url) ||
+      (contentType && !contentType.includes('html') && !contentType.includes('text/plain'))
+    ) {
+      return '';
+    }
+
+    return (await response.text()).slice(0, 3_000_000);
+  } catch {
+    return '';
+  } finally {
+    timedSignal.cleanup();
+  }
+}
+
+async function resolveGenericPage(sourceUrl: URL, parentSignal?: AbortSignal) {
+  const canonicalUrl = sourceUrl.toString();
+  const html = await fetchGenericHtml(canonicalUrl, parentSignal);
+  const media = extractGenericMedia(html, canonicalUrl);
+  const title = extractMeta(html, 'og:title') ?? extractMeta(html, 'twitter:title');
+  const caption = extractMeta(html, 'og:description') ?? extractMeta(html, 'description');
+  const discoveredCanonical = resolveGenericUrl(extractCanonical(html), canonicalUrl);
+  const resolvedCanonical = discoveredCanonical ?? canonicalUrl;
+
+  if (!media.length) {
+    return jsonResponse({
+      ok: true,
+      status: 'embed-only',
+      platform: 'generic',
+      kind: 'page',
+      canonicalUrl: resolvedCanonical,
+      embedUrl: resolvedCanonical,
+      title,
+      caption,
+      media: [],
+      message: 'No public image media was exposed by that page.',
+    }, { browserTtl: 15, cdnTtl: 30 });
+  }
+
+  return jsonResponse({
+    ok: true,
+    status: 'ready',
+    platform: 'generic',
+    kind: 'page',
+    canonicalUrl: resolvedCanonical,
+    embedUrl: resolvedCanonical,
+    title,
+    caption,
+    media,
+  }, { browserTtl: 60, cdnTtl: 300 });
+}
+
 async function fetchJson(target: string, referer: string, parentSignal?: AbortSignal) {
   const timedSignal = createTimedSignal(parentSignal);
 
@@ -1231,25 +1436,31 @@ export async function GET(request: Request) {
     const input = requestUrl.searchParams.get("url")?.trim();
     if (!input) {
       return jsonResponse(
-        { error: "Paste an Instagram or X link first." },
+        { error: "Paste a media link first." },
         { status: 400 },
       );
     }
 
     const sourceUrl = new URL(input);
-    sourceUrl.search = "";
-    sourceUrl.hash = "";
     const sourceHost = sourceUrl.hostname.toLowerCase();
     if (TWITTER_SOURCE_HOSTS.has(sourceHost)) {
+      sourceUrl.search = "";
+      sourceUrl.hash = "";
       return resolveTwitterPost(sourceUrl, request.signal);
     }
 
     if (!INSTAGRAM_SOURCE_HOSTS.has(sourceHost)) {
-      return jsonResponse(
-        { error: "Use a link from Instagram, X, or Twitter." },
-        { status: 422 },
-      );
+      if (!isSafeGenericUrl(sourceUrl.toString())) {
+        return jsonResponse(
+          { error: "Use a public http or https link." },
+          { status: 422 },
+        );
+      }
+      return resolveGenericPage(sourceUrl, request.signal);
     }
+
+    sourceUrl.search = "";
+    sourceUrl.hash = "";
 
     const canonicalUrl = `https://www.instagram.com${getPostPath(sourceUrl)}`;
     const embedUrl = getEmbedUrl(sourceUrl);
