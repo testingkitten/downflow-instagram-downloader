@@ -1,4 +1,4 @@
-const SHELL_CACHE = "download-images-shell-v5";
+const SHELL_CACHE = "download-images-shell-v6";
 const DEVICE_DOWNLOAD_PATH = "/__device-download";
 const DEVICE_DOWNLOAD_CAPABILITY = "downflow-device-download-v1";
 const APP_SHELL = [

@@ -579,11 +579,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.classList.toggle("share-handoff", isShareLaunch);
-    return () => document.documentElement.classList.remove("share-handoff");
-  }, [isShareLaunch]);
-
-  useEffect(() => {
     return () => {
       downloadSequenceRef.current += 1;
       if (debounceRef.current) window.clearTimeout(debounceRef.current);
@@ -822,6 +817,7 @@ export default function Home() {
           } catch {
             // Browsers may refuse to close a PWA window they did not open.
           }
+          setIsShareLaunch(false);
           shareCloseRef.current = null;
         }, 2500);
       };
@@ -1042,9 +1038,27 @@ export default function Home() {
       ? "X"
       : "Instagram";
 
+  if (isShareLaunch) {
+    return (
+      <main
+        className="share-handoff-screen"
+        aria-live="polite"
+        aria-busy={!shareDownloadComplete}
+      >
+        <div
+          className={`share-handoff-mark ${shareDownloadComplete ? "is-complete" : "is-saving"}`}
+          aria-hidden="true"
+        >
+          {shareDownloadComplete ? <Icon name="check" size={19} /> : <span />}
+        </div>
+        <p>{shareDownloadComplete ? "Saved" : "Saving"}</p>
+      </main>
+    );
+  }
+
   return (
     <main
-      className={`site-frame is-${viewState} ${hasWorkspace ? "has-workspace" : "is-idle-layout"} ${isShareLaunch ? "is-share-launch" : ""}`}
+      className={`site-frame is-${viewState} ${hasWorkspace ? "has-workspace" : "is-idle-layout"}`}
     >
       <nav className="topbar" aria-label="Primary">
         <button
