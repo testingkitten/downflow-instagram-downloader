@@ -76,6 +76,8 @@ const AUTO_DOWNLOAD_STORAGE_KEY = "downflow:auto-download";
 const RESOLVE_CACHE_STORAGE_KEY = "downflow:resolve-cache:v2";
 const RESOLVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const RESOLVE_CACHE_MAX_ENTRIES = 8;
+const DEVICE_DOWNLOAD_PATH = "/__device-download";
+const DEVICE_DOWNLOAD_CAPABILITY = "downflow-device-download-v1";
 const ICON_PATHS = {
   "arrow-clockwise": "M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z",
   "arrow-square-out": "M228,104a12,12,0,0,1-24,0V69l-59.51,59.51a12,12,0,0,1-17-17L187,52H152a12,12,0,0,1,0-24h64a12,12,0,0,1,12,12Zm-44,24a12,12,0,0,0-12,12v64H52V84h64a12,12,0,0,0,0-24H48A20,20,0,0,0,28,80V208a20,20,0,0,0,20,20H176a20,20,0,0,0,20-20V140A12,12,0,0,0,184,128Z",
@@ -418,6 +420,66 @@ async function fetchMediaBlob(media: MediaItem, onProgress: DownloadProgressCall
   return readResponseBlob(directResponse, onProgress);
 }
 
+function isTwitterVideoUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "video.twimg.com";
+  } catch {
+    return false;
+  }
+}
+
+async function supportsDeviceDownloadStream() {
+  const controller = navigator.serviceWorker?.controller;
+  if (!controller) return false;
+
+  return new Promise<boolean>((resolve) => {
+    const channel = new MessageChannel();
+    const timeoutId = window.setTimeout(() => {
+      channel.port1.close();
+      resolve(false);
+    }, 800);
+
+    channel.port1.onmessage = (event) => {
+      window.clearTimeout(timeoutId);
+      channel.port1.close();
+      resolve(event.data?.capability === DEVICE_DOWNLOAD_CAPABILITY);
+    };
+
+    controller.postMessage(
+      { type: "device-download-capability" },
+      [channel.port2],
+    );
+  });
+}
+
+async function startDeviceDownload(media: MediaItem, fileName: string) {
+  if (media.type !== "video" || !isTwitterVideoUrl(media.url)) return false;
+  if (!(await supportsDeviceDownloadStream())) return false;
+
+  const sourceCheck = await fetch(media.url, {
+    cache: "no-store",
+    credentials: "omit",
+    method: "HEAD",
+    mode: "cors",
+    referrerPolicy: "no-referrer",
+    redirect: "follow",
+  });
+  if (!sourceCheck.ok) return false;
+
+  const downloadUrl = new URL(DEVICE_DOWNLOAD_PATH, window.location.origin);
+  downloadUrl.searchParams.set("source", media.url);
+  downloadUrl.searchParams.set("filename", fileName);
+
+  const downloadFrame = document.createElement("iframe");
+  downloadFrame.src = downloadUrl.toString();
+  downloadFrame.hidden = true;
+  downloadFrame.setAttribute("aria-hidden", "true");
+  downloadFrame.tabIndex = -1;
+  document.body.appendChild(downloadFrame);
+  return true;
+}
+
 async function prepareDownloadBlob(
   media: MediaItem,
   onProgress: DownloadProgressCallback,
@@ -553,6 +615,7 @@ export default function Home() {
       isBatch = false,
     ) => {
       const baseName = getDownloadBaseName(source);
+      const fileName = getDownloadFileName(media, baseName);
       const progressIndex = isBatch ? index : 0;
       const progressTotal = isBatch ? total : 1;
       if (progressResetRef.current) {
@@ -592,6 +655,16 @@ export default function Home() {
         phase: "downloading",
         indeterminate: true,
       });
+
+      try {
+        if (await startDeviceDownload(media, fileName)) {
+          setDownloadMessage("Sent to this device's download manager.");
+          markComplete();
+          return true;
+        }
+      } catch {
+        // Fall back to a browser-local Blob download below.
+      }
 
       try {
         const blob = await prepareDownloadBlob(
@@ -634,7 +707,7 @@ export default function Home() {
         const objectUrl = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = objectUrl;
-        anchor.download = getDownloadFileName(media, baseName);
+        anchor.download = fileName;
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
@@ -643,8 +716,7 @@ export default function Home() {
         markComplete();
         return true;
       } catch {
-        window.open(media.url, "_blank", "noopener,noreferrer");
-        setDownloadMessage("The source blocked local saving, so it was opened directly.");
+        setDownloadMessage("The browser blocked this download. Keep the app open and try again.");
         setItemDownloadProgress((previous) => {
           const next = { ...previous };
           delete next[index];
